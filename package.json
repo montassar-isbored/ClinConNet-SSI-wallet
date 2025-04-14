@@ -1,0 +1,44 @@
+{
+  "name": "clinconnet-veramo-wallet",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:dev": "webpack --mode=development --stats-error-details",
+    "watch": "webpack --mode=development --watch --stats-error-details"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@veramo/core": "^6.0.0",
+    "@veramo/core-types": "^6.0.0",
+    "@veramo/data-store": "^6.0.0",
+    "@veramo/did-manager": "^6.0.0",
+    "@veramo/did-provider-key": "^6.0.0",
+    "@veramo/key-manager": "^6.0.0",
+    "@veramo/kms-local": "^6.0.0",
+    "assert": "^2.1.0",
+    "browserify-zlib": "^0.2.0",
+    "buffer": "^6.0.3",
+    "crypto-browserify": "^3.12.1",
+    "events": "^3.3.0",
+    "https-browserify": "^1.0.0",
+    "os-browserify": "^0.3.0",
+    "path-browserify": "^1.0.1",
+    "process": "^0.11.10",
+    "sql.js": "^1.13.0",
+    "stream-browserify": "^3.0.0",
+    "typeorm": "^0.3.22",
+    "url": "^0.11.4",
+    "util": "^0.12.5",
+    "vm-browserify": "^1.1.2"
+  },
+  "devDependencies": {
+    "copy-webpack-plugin": "^13.0.0",
+    "node-polyfill-webpack-plugin": "^4.1.0",
+    "webpack": "^5.99.5",
+    "webpack-cli": "^6.0.1"
+  }
+}
