@@ -54,25 +54,9 @@ module.exports = {
                 { from: "pages/manageDids.html", to: "pages/" },
                 { from: "pages/manageDids.css", to: "pages/" },
                 { from: "icons", to: "icons/" },
-                // === ADD BACK Wasm copy ===
-                {
-                   from: 'node_modules/sql.js/dist/sql-wasm.wasm',
-                   to: '.' // Copy to dist root
-                }
-                // ========================
             ],
         }),
     ],
-    // === ADD BACK Wasm experiment ===
-    experiments: {
-         asyncWebAssembly: true,
-         topLevelAwait: true // Keep if needed
-    },
-    // ==============================
-    stats: {
-        errorDetails: true
-    },
+    stats: {errorDetails: true},
     ignoreWarnings: [/Critical dependency: the request of a dependency is an expression/],
-    // No Babel rules needed unless your own code requires transpilation
-    // module: { rules: [] },
 };

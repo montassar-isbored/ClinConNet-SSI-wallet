@@ -1,30 +1,29 @@
 // background/service-worker.js
-// Version intended for use with TypeORM/sql.js based veramoService
+// Version for use with JSON store veramoService
 
-// Ensure imports point to the correct service file
 import { getAgent, createNewDidKey } from '../services/veramoService.js';
 
 console.log("ClinConNet Veramo Wallet - Service Worker Starting...");
 
-// Agent instance holder
+// Agent instance holder & state tracking
 let agentInstance = null;
-// Track initialization state
 let agentInitializationState = 'pending'; // 'pending', 'success', 'error'
 let agentInitializationError = null;
 
-// --- Initialize Agent on startup ---
+// --- Trigger Initialize Agent on startup ---
 // We call getAgent() which handles the singleton initialization promise
+console.log('[BG Script] Triggering agent initialization...');
 getAgent()
     .then((agent) => {
         agentInstance = agent;
         agentInitializationState = 'success';
-        // Log includes expected method check result from veramoService.js
-        console.log("[BG Script] Veramo Agent initialization promise resolved successfully in Service Worker.");
+        console.log("[BG Script] Veramo Agent initialization promise resolved successfully.");
+        // Check methods immediately for debugging
+        console.log("[BG Script] Post-init check: typeof agentInstance.didManagerFind:", typeof agentInstance?.didManagerFind);
     })
     .catch(error => {
         agentInitializationState = 'error';
         agentInitializationError = error; // Store the specific error
-        // The FATAL error is already logged in veramoService.js, log context here
         console.error("[BG Script] SERVICE WORKER DETECTED AGENT INITIALIZATION FAILURE:", error.message);
     });
 
@@ -35,104 +34,96 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     let keepAlive = true; // Assume async response needed
 
     (async () => {
-        // Check agent status BEFORE attempting operations that require it
+        // Ensure agent is ready before proceeding
         if (agentInitializationState !== 'success') {
             if (agentInitializationState === 'error') {
                 console.error("[BG Script] Agent previously failed initialization. Reporting error.");
                 sendResponse({ success: false, error: `Agent failed startup: ${agentInitializationError?.message || 'Unknown initialization error'}` });
-                return; // Stop processing
+                return;
             } else { // State is 'pending'
                 console.warn("[BG Script] Agent initialization still pending, awaiting...");
                 try {
-                    // Await the existing promise (or re-trigger init if needed)
-                    agentInstance = await getAgent();
-                    agentInitializationState = 'success'; // Update state if successful now
+                    agentInstance = await getAgent(); // Wait for the promise again
+                    agentInitializationState = 'success';
                     console.log("[BG Script] Agent finished initializing on demand.");
+                    console.log("[BG Script] On-demand check: typeof agentInstance.didManagerFind:", typeof agentInstance?.didManagerFind);
                 } catch (initError) {
-                    // Initialization failed during this check
                     agentInitializationState = 'error';
                     agentInitializationError = initError;
                     console.error("[BG Script] Failed to initialize agent on demand:", initError);
                     sendResponse({ success: false, error: `Agent not initialized: ${initError.message}` });
-                    return; // Stop processing
+                    return;
                 }
             }
         }
-
-        // If we reached here, state should be 'success' and agentInstance should be valid
+        // If we got here, state should be 'success'
         if (!agentInstance) {
              console.error("[BG Script] Critical Error: Agent state is 'success' but instance is null!");
-             sendResponse({ success: false, error: 'Internal error: Agent instance unavailable.' });
+             sendResponse({ success: false, error: 'Internal error: Agent instance not available.' });
              return;
         }
+         // Add safety check for required method before using it
+         if (typeof agentInstance.didManagerFind !== 'function' && (message.type === 'GET_AGENT_STATUS' || message.type === 'GET_ALL_DIDS')) {
+              console.error("[BG Script] Agent is missing didManagerFind method!");
+              sendResponse({ success: false, error: 'Agent is missing required DID methods.' });
+              return;
+         }
+         if (typeof agentInstance.didManagerCreate !== 'function' && message.type === 'CREATE_PEER_DID') {
+              console.error("[BG Script] Agent is missing didManagerCreate method!");
+              sendResponse({ success: false, error: 'Agent is missing required DID methods.' });
+              return;
+         }
+
 
         // --- Handle Messages ---
         try {
             if (message.type === 'GET_AGENT_STATUS') {
                 console.log('[BG Script] Handling GET_AGENT_STATUS...');
-                // This call is EXPECTED TO FAIL with "no such table" until persistence is fixed
-                const identifiers = await agentInstance.didManagerFind();
-                console.log('[BG Script] Raw identifiers found by didManagerFind():', JSON.stringify(identifiers));
-
-                const didKeys = identifiers.filter(id => id.provider === 'did:key');
-                const publicDidIdentifier = didKeys.length > 0 ? didKeys[0] : null;
-                const publicDid = publicDidIdentifier?.did || 'No did:key found';
-
-                const peerDidIdentifiers = publicDidIdentifier
-                    ? didKeys.filter(id => id.did !== publicDidIdentifier.did)
-                    : didKeys;
-
+                const identifiers = await agentInstance.didManagerFind(); // Use find
+                const publicDid = identifiers.find(id => id.provider === 'did:key'); // Find first did:key
+                 // Calculate recent peer DIDs (filtering out the first did:key found)
+                 const peerDidIdentifiers = publicDid
+                    ? identifiers.filter(id => id.provider === 'did:key' && id.did !== publicDid.did)
+                    : identifiers.filter(id => id.provider === 'did:key'); // If no public, all are peers
                 const recentPeerDids = peerDidIdentifiers.slice(-3).map(id => id.did);
-                console.log('[BG Script] Calculated recentPeerDids:', JSON.stringify(recentPeerDids));
 
                 const status = {
-                    isInitialized: true, // Reached here, so init part worked
-                    publicDid: publicDid,
+                    isInitialized: true,
+                    publicDid: publicDid?.did || 'No did:key found',
                     didCount: identifiers.length,
-                    recentPeerDids: recentPeerDids // Include the calculated list
+                    recentPeerDids: recentPeerDids
                 };
                 console.log('[BG Script] Sending status object:', JSON.stringify(status));
                 sendResponse({ success: true, status });
 
             } else if (message.type === 'CREATE_PEER_DID') {
                 console.log('[BG Script] Handling CREATE_PEER_DID...');
-                // This uses the service function which wraps the agent call
-                // This call is EXPECTED TO FAIL with "no such table" or similar until persistence is fixed
-                const newIdentifier = await createNewDidKey();
-                sendResponse({ success: true, newDid: newIdentifier.did }); // Send back success even if save fails for now
+                const newIdentifier = await createNewDidKey(); // Use service function (which now calls agentInstance.didManagerCreate)
+                sendResponse({ success: true, newDid: newIdentifier.did });
 
             } else if (message.type === 'GET_ALL_DIDS') {
                 console.log('[BG Script] Handling GET_ALL_DIDS...');
-                 // This call is EXPECTED TO FAIL with "no such table" until persistence is fixed
                 const identifiers = await agentInstance.didManagerFind();
                 console.log('[BG Script] Found DIDs for GET_ALL_DIDS:', identifiers);
                 sendResponse({ success: true, identifiers: identifiers });
             }
             // No RESOLVE_DID handler
-            // No OPEN_SIDE_PANEL handler
             else {
                  console.warn("[BG Script] Unknown message type received:", message.type);
                  sendResponse({ success: false, error: 'Unknown message type' });
                  keepAlive = false;
             }
         } catch (error) {
-             // This catch block is likely where the "no such table" error will appear
              console.error(`[BG Script] Error handling message ${message.type}:`, error);
              sendResponse({ success: false, error: `Error processing ${message.type}: ${error.message || 'Unknown error'}` });
              keepAlive = false;
         }
     })();
 
-    return keepAlive; // Return true to keep message channel open for async response
+    return keepAlive;
 });
-
 
 // Basic keep-alive alarm
 chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === 'keepAlive') {
-    // console.log("Keep-alive alarm triggered.");
-  }
-});
-
+chrome.alarms.onAlarm.addListener(alarm => { /* ... */ });
 console.log("Service Worker listeners registered.");

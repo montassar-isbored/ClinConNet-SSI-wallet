@@ -14,7 +14,7 @@
   "dependencies": {
     "@veramo/core": "^6.0.0",
     "@veramo/core-types": "^6.0.0",
-    "@veramo/data-store": "^6.0.0",
+    "@veramo/data-store-json": "^6.0.0",
     "@veramo/did-manager": "^6.0.0",
     "@veramo/did-provider-key": "^6.0.0",
     "@veramo/key-manager": "^6.0.0",
@@ -28,9 +28,7 @@
     "os-browserify": "^0.3.0",
     "path-browserify": "^1.0.1",
     "process": "^0.11.10",
-    "sql.js": "^1.13.0",
     "stream-browserify": "^3.0.0",
-    "typeorm": "^0.3.22",
     "url": "^0.11.4",
     "util": "^0.12.5",
     "vm-browserify": "^1.1.2"
