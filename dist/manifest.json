@@ -12,7 +12,7 @@
     "storage",
     "alarms"
   ],
-  "host_permissions": [],
+  "host_permissions": ["https://localhost:3000/*"],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self';"
   },
