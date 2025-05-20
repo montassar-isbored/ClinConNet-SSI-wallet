@@ -23,11 +23,11 @@ function stringToBase64Url(str) {
   import { CredentialPlugin } from '@veramo/credential-w3c'; // For createJWT if it were working, but also for ICredentialPlugin type
   import { DIDStoreJson, KeyStoreJson, PrivateKeyStoreJson } from '@veramo/data-store-json';
   // Imports for other plugins if they were to be added back:
-  // import { MessageHandler } from '@veramo/message-handler';
-  // import { DIDComm, DIDCommMessageHandler, CoordinateMediationRecipientMessageHandler } from '@veramo/did-comm';
-  // import { DIDResolverPlugin } from '@veramo/did-resolver';
-  // import { Resolver } from 'did-resolver';
-  // import { getResolver as getWebResolver } from 'web-did-resolver';
+  import { MessageHandler } from '@veramo/message-handler';
+  import { DIDComm, DIDCommMessageHandler, CoordinateMediationRecipientMessageHandler } from '@veramo/did-comm';
+  import { DIDResolverPlugin } from '@veramo/did-resolver';
+  import { Resolver } from 'did-resolver';
+  import { getResolver as getWebResolver } from 'web-did-resolver';
   // --- End Veramo Imports ---
   
   // Import our chrome.storage helper
@@ -42,7 +42,7 @@ function stringToBase64Url(str) {
   
   // Hardcoded Mediator Info (for requestAndSetupMediation - will error if DIDComm not present)
   const MEDIATOR_DID = 'did:key:z6Mknee8x3XangPXcUDkwn6p7V9i4qyymVfxD1NXALv1tYTK';
-  const MEDIATOR_ENDPOINT = `http://localhost:${process.env.PORT || 3000}/didcomm`;
+  const MEDIATOR_ENDPOINT = `http://localhost:3002/didcomm`; // Example endpoint, replace with actual mediator endpoint`;
   
   
   // Direct save function (no debounce)

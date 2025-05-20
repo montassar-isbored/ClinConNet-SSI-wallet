@@ -3,37 +3,84 @@
 <head>
     <title>ClinConNet Wallet</title>
     <link rel="stylesheet" href="popup.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+
 </head>
 <body class="wallet-popup">
-    <header class="header">
-        <img src="../icons/icon48.png" alt="Logo" class="header-logo">
-        <h1>ClinConNet Wallet</h1>
-    </header>
-    <section class="main-content">
-        <h2>Status</h2>
-        <div id="status" class="status-display">Loading...</div>
-        <h2>Public DID</h2>
-        <span id="publicDid" class="code-block">N/A</span>
-        <button id="copyDidBtn" class="button-copy-did" title="Copy Full DID">Copy</button> <div id="recentPeerDidsContainer">
-             <h2>Recent Peer DIDs</h2>
-             <ul id="peerDidList" class="peer-did-list"></ul>
-        </div>
-        <hr>
-        <h2>Actions</h2>
-        <div class="button-group">
-            <button id="createPeerDidBtn" class="button-primary">Create New DID</button>
-            <button id="showAllDidsBtn" class="button-secondary">Show All DIDs</button>
+
+    <div id="mainViewContainer">
+        <header class="header">
+            <img src="../icons/icon48.png" alt="Logo" class="header-logo">
+            <h1>ClinConNet Wallet</h1>
+        </header>
+
+        <section class="main-content">
+            <h2>Status</h2>
+            <div id="status" class="status-display">Loading...</div>
+
+            <h2>Participant DID</h2>
+            <span id="publicDid" class="code-block">N/A</span>
+            <button id="copyDidBtn" class="button-copy-did" title="Copy Full DID">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16"> <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/> <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zM-1 1.5A1.5 1.5 0 0 1 0 0h4a1.5 1.5 0 0 1 1.5 1.5v1A1.5 1.5 0 0 1 4 4h-4A1.5 1.5 0 0 1-1 2.5v-1zm10 0A1.5 1.5 0 0 1 10 0h4a1.5 1.5 0 0 1 1.5 1.5v1A1.5 1.5 0 0 1 14 4h-4A1.5 1.5 0 0 1 9 2.5v-1z"/> </svg>
+                Copy Full DID
+            </button>
+
+            <div id="recentPeerDidsContainer">
+                 <h2>Recent Peer DIDs</h2>
+                 <ul id="peerDidList" class="peer-did-list"></ul>
             </div>
-        <hr>
-        <section id="didAuthSection">
-            <h2>DID Authentication</h2>
-            <p>Paste OIDC Auth Request (JSON):</p>
-            <textarea id="oidcRequestInput" rows="8" placeholder='Example: {"response_type":"id_token","scope":"openid","client_id":"YOUR_RP_CLIENT_ID","redirect_uri":"YOUR_RP_CALLBACK_URL","nonce":"..."}'></textarea>
+            <hr>
+            <h2>Actions</h2>
             <div class="button-group">
-                <button id="didAuthBtn" class="button-primary">Authenticate</button>
+                <button id="createPeerDidBtn" class="button-primary">Create Peer DID</button>
+                <button id="showAllDidsBtn" class="button-secondary">Show All DIDs</button>
+            </div>
+            <div class="button-group" style="margin-top: 10px;">
+                 <button id="goToMessagesBtn" class="button-secondary">Messages & Connections</button>
+            </div>
+            <hr>
+            <section id="didAuthSection">
+                <h2>DID Authentication</h2>
+                <p>Paste OIDC Auth Request (JSON) from RP:</p>
+                <textarea id="oidcRequestInput" rows="6" placeholder='Example: {"response_type":"id_token","scope":"openid","client_id":"YOUR_RP_CLIENT_ID","redirect_uri":"YOUR_RP_CALLBACK_URL","nonce":"..."}'></textarea>
+                <div class="button-group">
+                    <button id="didAuthBtn" class="button-primary">Authenticate</button>
+                </div>
+            </section>
+        </section>
+    </div> <div id="messagesViewContainer" style="display: none;">
+        <header class="header">
+            <button id="backToMainBtn" class="back-button" title="Back to Main Wallet"><i class='far fa-arrow-alt-circle-left'></i>
+            </button>
+
+        </header>
+        <section class="main-content">
+            <div class="connection-status-section">
+                <h3>Cloud Agent (Mediator) Status</h3>
+                <div class="status-indicator-container">
+                    <span id="mediatorStatusIndicator" class="status-dot status-disconnected"></span>
+                    <span id="mediatorStatusText">Disconnected</span>
+                </div>
+                <p>Current Mediator DID: <span id="currentMediatorDid" class="code-block-inline">Not Connected</span></p>
+            </div>
+
+            <div class="form-section">
+                <label for="cloudAgentDidInput">Cloud Agent (Mediator) DID:</label>
+                <input type="text" id="cloudAgentDidInput" class="input-field" placeholder="Enter Cloud Agent's did:key or did:web">
+                <button id="connectMediatorBtn" class="button button-primary" style="margin-top: 5px;">Connect to Mediator</button>
+                <p id="connectMediatorStatus" class="status-text"></p>
+            </div>
+            <hr>
+            <div id="connectionsList">
+                <h3>Your Connections</h3>
+                <p><em>(List of connections with other wallets will appear here)</em></p>
+            </div>
+            <hr>
+            <div id="messagesArea">
+                <h3>Messages</h3>
+                <p><em>(Messages will appear here)</em></p>
             </div>
         </section>
-    </section>
-    <script src="popup.js"></script>
+    </div> <script src="popup.js"></script>
 </body>
 </html>

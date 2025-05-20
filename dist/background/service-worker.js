@@ -8420,6 +8420,528 @@ const bytes = stringToBytes;
 
 /***/ }),
 
+/***/ "./node_modules/@stablelib/aes-kw/lib/aes-kw.js":
+/*!******************************************************!*\
+  !*** ./node_modules/@stablelib/aes-kw/lib/aes-kw.js ***!
+  \******************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2020 Tobias Looker
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+var aes_1 = __webpack_require__(/*! @stablelib/aes */ "./node_modules/@stablelib/aes/lib/aes.js");
+var binary_1 = __webpack_require__(/*! @stablelib/binary */ "./node_modules/@stablelib/binary/lib/binary.js");
+var wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+var constant_time_1 = __webpack_require__(/*! @stablelib/constant-time */ "./node_modules/@stablelib/constant-time/lib/constant-time.js");
+/**
+ * An implementation of the Advance Encryption Standard Key Wrapping Algorithm (AES-KW)
+ * originally designed by NIST and formalized in RFC 3394
+ * @see https://tools.ietf.org/html/rfc3394
+ * @see http://csrc.nist.gov/encryption/kms/key-wrap.pdf
+ */
+var AESKW = /** @class */ (function () {
+    /**
+     * Constructs AESKW instance with the given key.
+     *
+     * @param key: The key encryption key used to wrap and un-wrap
+     */
+    function AESKW(key) {
+        // Set the cipher to AES
+        this._cipher = new aes_1.AES(key);
+        // Set the initial value to that documented in section 2.2.3.1
+        // @see https://tools.ietf.org/html/rfc3394#section-2.2.3.1
+        this._iv = new Uint8Array([0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6]);
+        // Initialize the input and output buffers.
+        this._inputBuffer = new Uint8Array(this._cipher.blockSize);
+        this._outputBuffer = new Uint8Array(this._cipher.blockSize);
+    }
+    /**
+     * Cleans the buffers and underlying memory associated to the cipher.
+     */
+    AESKW.prototype.clean = function () {
+        wipe_1.wipe(this._inputBuffer);
+        wipe_1.wipe(this._outputBuffer);
+        this._cipher.clean();
+        return this;
+    };
+    /**
+     * Wraps supplied key data with the key encryption key supplied in the constructor.
+     *
+     * @param keyData: The key data to wrap with the key encryption key
+     */
+    AESKW.prototype.wrapKey = function (keyData) {
+        // Floor divide the length of the key data to determine
+        // how many 64 bit data blocks it contains.
+        var N = (keyData.length - (keyData.length % 8)) / 8;
+        // The keyData must be at minimum 128 bit (16 bytes) in length.
+        if (N <= 1) {
+            throw new Error("AESKW: key size must be at least 16 bytes");
+        }
+        // Set A to the initial value.
+        var A = new Uint8Array(this._iv);
+        // Initialize the length of the wrapped key, size always equals N+1.
+        var wrappedKey = new Uint8Array(8 * (N + 1));
+        // Set the plain text into the wrapped key array offset
+        // by one 64 bit data block.
+        wrappedKey.set(keyData, 8);
+        for (var j = 0; j < 6; j++) {
+            for (var i = 1; i <= N; i++) {
+                this._inputBuffer.set(A);
+                this._inputBuffer.set(wrappedKey.subarray(i * 8, (i + 1) * 8), 8);
+                this._cipher.encryptBlock(this._inputBuffer, this._outputBuffer);
+                binary_1.writeUint64BE(i + j * N, A);
+                xor(A, this._outputBuffer.subarray(0, 8));
+                wrappedKey.set(this._outputBuffer.subarray(8, 16), i * 8);
+            }
+        }
+        wrappedKey.set(A);
+        wipe_1.wipe(A);
+        return wrappedKey;
+    };
+    /**
+     * Un-wraps a wrapped key using the key encryption key supplied in the
+     * constructor
+     * @param wrappedKey: The wrapped key to un-wrap with the key encryption key
+     */
+    AESKW.prototype.unwrapKey = function (wrappedKey) {
+        // Floor divide the length of the unwrapped key to determine
+        // how many 64 bit data blocks it contains, N represents the number
+        // of 64 bit data blocks of the plain text which is always one less
+        // than the cipher text
+        var N = ((wrappedKey.length - (wrappedKey.length % 8)) / 8) - 1;
+        // The keyData must be at minimum 128 bit (16 bytes) in length
+        if (N <= 1) {
+            throw new Error("AESKW: key size must be at least 16 bytes");
+        }
+        // Set A to the first 64 bit data block of the wrapped key.
+        var A = new Uint8Array(wrappedKey.subarray(0, 8));
+        // Allocate temporary array.
+        var tmp = new Uint8Array(8);
+        // Initialize the length of the key data, size always equals N.
+        var keyData = new Uint8Array(8 * N);
+        var encryptedKeyData = new Uint8Array(wrappedKey);
+        for (var j = 5; j >= 0; j--) {
+            for (var i = N; i >= 1; i--) {
+                binary_1.writeUint64BE(i + j * N, tmp);
+                xor(A, tmp);
+                this._inputBuffer.set(A);
+                this._inputBuffer.set(encryptedKeyData.subarray((i) * 8, (i + 1) * 8), 8);
+                this._cipher.decryptBlock(this._inputBuffer, this._outputBuffer);
+                A.set(this._outputBuffer.subarray(0, 8));
+                encryptedKeyData.set(this._outputBuffer.subarray(8, 16), i * 8);
+            }
+        }
+        // Integrity check, the A component of the un-wrapped key buffer should
+        // equal the default initial value.
+        if (constant_time_1.compare(A, this._iv) == 0) {
+            throw new Error("AESKW: integrity check failed");
+        }
+        keyData.set(encryptedKeyData.subarray(8));
+        wipe_1.wipe(encryptedKeyData);
+        wipe_1.wipe(A);
+        wipe_1.wipe(tmp);
+        return keyData;
+    };
+    return AESKW;
+}());
+exports.AESKW = AESKW;
+/**
+ * Xors b into a.
+ */
+function xor(a, b) {
+    for (var i = 0; i < b.length; i++) {
+        a[i] ^= b[i];
+    }
+}
+//# sourceMappingURL=aes-kw.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@stablelib/aes/lib/aes.js":
+/*!************************************************!*\
+  !*** ./node_modules/@stablelib/aes/lib/aes.js ***!
+  \************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2016 Dmitry Chestnykh
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+var wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+var binary_1 = __webpack_require__(/*! @stablelib/binary */ "./node_modules/@stablelib/binary/lib/binary.js");
+// Powers of x mod poly in GF(2).
+var POWX = new Uint8Array([
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+    0x1b, 0x36, 0x6c, 0xd8, 0xab, 0x4d, 0x9a, 0x2f
+]);
+// FIPS-197 Figure 7. S-box substitution values in hexadecimal format.
+var SBOX0 = new Uint8Array([
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
+]);
+// FIPS-197 Figure 14.  Inverse S-box substitution values in hexadecimal format.
+var SBOX1 = new Uint8Array([
+    0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
+    0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
+    0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c, 0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e,
+    0x08, 0x2e, 0xa1, 0x66, 0x28, 0xd9, 0x24, 0xb2, 0x76, 0x5b, 0xa2, 0x49, 0x6d, 0x8b, 0xd1, 0x25,
+    0x72, 0xf8, 0xf6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xd4, 0xa4, 0x5c, 0xcc, 0x5d, 0x65, 0xb6, 0x92,
+    0x6c, 0x70, 0x48, 0x50, 0xfd, 0xed, 0xb9, 0xda, 0x5e, 0x15, 0x46, 0x57, 0xa7, 0x8d, 0x9d, 0x84,
+    0x90, 0xd8, 0xab, 0x00, 0x8c, 0xbc, 0xd3, 0x0a, 0xf7, 0xe4, 0x58, 0x05, 0xb8, 0xb3, 0x45, 0x06,
+    0xd0, 0x2c, 0x1e, 0x8f, 0xca, 0x3f, 0x0f, 0x02, 0xc1, 0xaf, 0xbd, 0x03, 0x01, 0x13, 0x8a, 0x6b,
+    0x3a, 0x91, 0x11, 0x41, 0x4f, 0x67, 0xdc, 0xea, 0x97, 0xf2, 0xcf, 0xce, 0xf0, 0xb4, 0xe6, 0x73,
+    0x96, 0xac, 0x74, 0x22, 0xe7, 0xad, 0x35, 0x85, 0xe2, 0xf9, 0x37, 0xe8, 0x1c, 0x75, 0xdf, 0x6e,
+    0x47, 0xf1, 0x1a, 0x71, 0x1d, 0x29, 0xc5, 0x89, 0x6f, 0xb7, 0x62, 0x0e, 0xaa, 0x18, 0xbe, 0x1b,
+    0xfc, 0x56, 0x3e, 0x4b, 0xc6, 0xd2, 0x79, 0x20, 0x9a, 0xdb, 0xc0, 0xfe, 0x78, 0xcd, 0x5a, 0xf4,
+    0x1f, 0xdd, 0xa8, 0x33, 0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f,
+    0x60, 0x51, 0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
+    0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53, 0x99, 0x61,
+    0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d
+]);
+// Encryption and decryption tables.
+// Will be computed by initialize() when the first AES instance is created.
+var isInitialized = false;
+var Te0, Te1, Te2, Te3;
+var Td0, Td1, Td2, Td3;
+// Initialize generates encryption and decryption tables.
+function initialize() {
+    var poly = (1 << 8) | (1 << 4) | (1 << 3) | (1 << 1) | (1 << 0);
+    function mul(b, c) {
+        var i = b;
+        var j = c;
+        var s = 0;
+        for (var k = 1; k < 0x100 && j !== 0; k <<= 1) {
+            // Invariant: k == 1<<n, i == b * x^n
+            if ((j & k) !== 0) {
+                s ^= i; // xor in binary is s += i in GF(2)
+                j ^= k; // turn off bit to end loop early
+            }
+            // i *= x in GF(2) modulo the polynomial
+            i <<= 1;
+            if ((i & 0x100) !== 0) {
+                i ^= poly;
+            }
+        }
+        return s;
+    }
+    var rot = function (x) { return (x << 24) | (x >>> 8); };
+    // Generate encryption tables.
+    Te0 = new Uint32Array(256);
+    Te1 = new Uint32Array(256);
+    Te2 = new Uint32Array(256);
+    Te3 = new Uint32Array(256);
+    for (var i = 0; i < 256; i++) {
+        var s = SBOX0[i];
+        var w = (mul(s, 2) << 24) | (s << 16) | (s << 8) | mul(s, 3);
+        Te0[i] = w;
+        w = rot(w);
+        Te1[i] = w;
+        w = rot(w);
+        Te2[i] = w;
+        w = rot(w);
+        Te3[i] = w;
+        w = rot(w);
+    }
+    // Generate decryption tables.
+    Td0 = new Uint32Array(256);
+    Td1 = new Uint32Array(256);
+    Td2 = new Uint32Array(256);
+    Td3 = new Uint32Array(256);
+    for (var i = 0; i < 256; i++) {
+        var s = SBOX1[i];
+        var w = (mul(s, 0xe) << 24) | (mul(s, 0x9) << 16) |
+            (mul(s, 0xd) << 8) | mul(s, 0xb);
+        Td0[i] = w;
+        w = rot(w);
+        Td1[i] = w;
+        w = rot(w);
+        Td2[i] = w;
+        w = rot(w);
+        Td3[i] = w;
+        w = rot(w);
+    }
+    isInitialized = true;
+}
+/**
+ * AES block cipher.
+ *
+ * WARNING: This implementation uses lookup tables, so it's susceptible to cache-timing
+ * side-channel attacks. (A constant-time version we tried was super slow: a few
+ * kilobytes per second)
+ *
+ * Key size: 16, 24 or 32 bytes, block size: 16 bytes.
+ */
+var AES = /** @class */ (function () {
+    /**
+     * Constructs AES with the given 16, 24 or 32-byte key
+     * for AES-128, AES-192, or AES-256.
+     *
+     * If noDecryption is true, decryption key will not expanded,
+     * saving time and memory for cipher modes when decryption
+     * is not used (such as AES-CTR).
+     */
+    function AES(key, noDecryption) {
+        if (noDecryption === void 0) { noDecryption = false; }
+        // AES block size in bytes.
+        this.blockSize = 16;
+        if (!isInitialized) {
+            initialize();
+        }
+        this._keyLen = key.length;
+        this.setKey(key, noDecryption);
+    }
+    /**
+     * Re-initializes this instance with a new key.
+     *
+     * This is helpful to avoid allocations.
+     */
+    AES.prototype.setKey = function (key, noDecryption) {
+        if (noDecryption === void 0) { noDecryption = false; }
+        if (key.length !== 16 && key.length !== 24 && key.length !== 32) {
+            throw new Error("AES: wrong key size (must be 16, 24 or 32)");
+        }
+        if (this._keyLen !== key.length) {
+            throw new Error("AES: initialized with different key size");
+        }
+        // If we haven't yet, allocate space for expanded keys.
+        if (!this._encKey) {
+            this._encKey = new Uint32Array(key.length + 28);
+        }
+        if (noDecryption) {
+            // Wipe decryption key, as we no longer need it.
+            if (this._decKey) {
+                wipe_1.wipe(this._decKey);
+            }
+        }
+        else {
+            if (!this._decKey) {
+                this._decKey = new Uint32Array(key.length + 28);
+            }
+        }
+        expandKey(key, this._encKey, this._decKey);
+        return this;
+    };
+    /**
+     * Erases expanded keys from memory.
+     */
+    AES.prototype.clean = function () {
+        if (this._encKey) {
+            wipe_1.wipe(this._encKey);
+        }
+        if (this._decKey) {
+            wipe_1.wipe(this._decKey);
+        }
+        return this;
+    };
+    /**
+     * Encrypt 16-byte block src into 16-byte block dst.
+     *
+     * Source and destination may point to the same byte array.
+     *
+     * This function should not be used to encrypt data without any
+     * cipher mode! It should only be used to implement a cipher mode.
+     */
+    AES.prototype.encryptBlock = function (src, dst) {
+        // Check block lengths.
+        if (src.length < this.blockSize) {
+            throw new Error("AES: source block too small");
+        }
+        if (dst.length < this.blockSize) {
+            throw new Error("AES: destination block too small");
+        }
+        // Encrypt block.
+        encryptBlock(this._encKey, src, dst);
+        return this;
+    };
+    /**
+     * Decrypt 16-byte block src into 16-byte block dst.
+     *
+     * Source and destination may point to the same byte array.
+     *
+     * This function should not be used to encrypt data without any
+     * cipher mode! It should only be used to implement a cipher mode.
+     */
+    AES.prototype.decryptBlock = function (src, dst) {
+        // Check block lengths.
+        if (src.length < this.blockSize) {
+            throw new Error("AES: source block too small");
+        }
+        if (dst.length < this.blockSize) {
+            throw new Error("AES: destination block too small");
+        }
+        // Check that we have decryption key.
+        if (!this._decKey) {
+            throw new Error("AES: decrypting with instance created with noDecryption option");
+        }
+        else {
+            decryptBlock(this._decKey, src, dst);
+        }
+        return this;
+    };
+    return AES;
+}());
+exports.AES = AES;
+// Apply sbox0 to each byte in w.
+function subw(w) {
+    return ((SBOX0[(w >>> 24) & 0xff]) << 24) |
+        ((SBOX0[(w >>> 16) & 0xff]) << 16) |
+        ((SBOX0[(w >>> 8) & 0xff]) << 8) |
+        (SBOX0[w & 0xff]);
+}
+// Rotate
+function rotw(w) {
+    return (w << 8) | (w >>> 24);
+}
+function expandKey(key, encKey, decKey) {
+    var nk = key.length / 4 | 0;
+    var n = encKey.length;
+    for (var i = 0; i < nk; i++) {
+        encKey[i] = binary_1.readUint32BE(key, i * 4);
+    }
+    for (var i = nk; i < n; i++) {
+        var t = encKey[i - 1];
+        if (i % nk === 0) {
+            t = subw(rotw(t)) ^ (POWX[i / nk - 1] << 24);
+        }
+        else if (nk > 6 && i % nk === 4) {
+            t = subw(t);
+        }
+        encKey[i] = encKey[i - nk] ^ t;
+    }
+    if (decKey) {
+        // Derive decryption key from encryption key.
+        // Reverse the 4-word round key sets from enc to produce dec.
+        // All sets but the first and last get the MixColumn transform applied.
+        for (var i = 0; i < n; i += 4) {
+            var ei = n - i - 4;
+            for (var j = 0; j < 4; j++) {
+                var x = encKey[ei + j];
+                if (i > 0 && i + 4 < n) {
+                    x = Td0[SBOX0[(x >>> 24) & 0xff]] ^ Td1[SBOX0[(x >>> 16) & 0xff]] ^
+                        Td2[SBOX0[(x >>> 8) & 0xff]] ^ Td3[SBOX0[x & 0xff]];
+                }
+                decKey[i + j] = x;
+            }
+        }
+    }
+}
+function encryptBlock(xk, src, dst) {
+    var s0 = binary_1.readUint32BE(src, 0);
+    var s1 = binary_1.readUint32BE(src, 4);
+    var s2 = binary_1.readUint32BE(src, 8);
+    var s3 = binary_1.readUint32BE(src, 12);
+    // First round just XORs input with key.
+    s0 ^= xk[0];
+    s1 ^= xk[1];
+    s2 ^= xk[2];
+    s3 ^= xk[3];
+    var t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    // Middle rounds shuffle using tables.
+    // Number of rounds is set by length of expanded key.
+    var nr = xk.length / 4 - 2; // - 2: one above, one more below
+    var k = 4;
+    for (var r = 0; r < nr; r++) {
+        t0 = xk[k + 0] ^ Te0[(s0 >>> 24) & 0xff] ^ Te1[(s1 >>> 16) & 0xff] ^
+            Te2[(s2 >>> 8) & 0xff] ^ Te3[s3 & 0xff];
+        t1 = xk[k + 1] ^ Te0[(s1 >>> 24) & 0xff] ^ Te1[(s2 >>> 16) & 0xff] ^
+            Te2[(s3 >>> 8) & 0xff] ^ Te3[s0 & 0xff];
+        t2 = xk[k + 2] ^ Te0[(s2 >>> 24) & 0xff] ^ Te1[(s3 >>> 16) & 0xff] ^
+            Te2[(s0 >>> 8) & 0xff] ^ Te3[s1 & 0xff];
+        t3 = xk[k + 3] ^ Te0[(s3 >>> 24) & 0xff] ^ Te1[(s0 >>> 16) & 0xff] ^
+            Te2[(s1 >>> 8) & 0xff] ^ Te3[s2 & 0xff];
+        k += 4;
+        s0 = t0;
+        s1 = t1;
+        s2 = t2;
+        s3 = t3;
+    }
+    // Last round uses s-box directly and XORs to produce output.
+    s0 = (SBOX0[t0 >>> 24] << 24) | (SBOX0[(t1 >>> 16) & 0xff]) << 16 |
+        (SBOX0[(t2 >>> 8) & 0xff]) << 8 | (SBOX0[t3 & 0xff]);
+    s1 = (SBOX0[t1 >>> 24] << 24) | (SBOX0[(t2 >>> 16) & 0xff]) << 16 |
+        (SBOX0[(t3 >>> 8) & 0xff]) << 8 | (SBOX0[t0 & 0xff]);
+    s2 = (SBOX0[t2 >>> 24] << 24) | (SBOX0[(t3 >>> 16) & 0xff]) << 16 |
+        (SBOX0[(t0 >>> 8) & 0xff]) << 8 | (SBOX0[t1 & 0xff]);
+    s3 = (SBOX0[t3 >>> 24] << 24) | (SBOX0[(t0 >>> 16) & 0xff]) << 16 |
+        (SBOX0[(t1 >>> 8) & 0xff]) << 8 | (SBOX0[t2 & 0xff]);
+    s0 ^= xk[k + 0];
+    s1 ^= xk[k + 1];
+    s2 ^= xk[k + 2];
+    s3 ^= xk[k + 3];
+    binary_1.writeUint32BE(s0, dst, 0);
+    binary_1.writeUint32BE(s1, dst, 4);
+    binary_1.writeUint32BE(s2, dst, 8);
+    binary_1.writeUint32BE(s3, dst, 12);
+}
+function decryptBlock(xk, src, dst) {
+    var s0 = binary_1.readUint32BE(src, 0);
+    var s1 = binary_1.readUint32BE(src, 4);
+    var s2 = binary_1.readUint32BE(src, 8);
+    var s3 = binary_1.readUint32BE(src, 12);
+    // First round just XORs input with key.
+    s0 ^= xk[0];
+    s1 ^= xk[1];
+    s2 ^= xk[2];
+    s3 ^= xk[3];
+    var t0 = 0, t1 = 0, t2 = 0, t3 = 0;
+    // Middle rounds shuffle using tables.
+    // Number of rounds is set by length of expanded key.
+    var nr = xk.length / 4 - 2; // - 2: one above, one more below
+    var k = 4;
+    for (var r = 0; r < nr; r++) {
+        t0 = xk[k + 0] ^ Td0[(s0 >>> 24) & 0xff] ^ Td1[(s3 >>> 16) & 0xff] ^
+            Td2[(s2 >>> 8) & 0xff] ^ Td3[s1 & 0xff];
+        t1 = xk[k + 1] ^ Td0[(s1 >>> 24) & 0xff] ^ Td1[(s0 >>> 16) & 0xff] ^
+            Td2[(s3 >>> 8) & 0xff] ^ Td3[s2 & 0xff];
+        t2 = xk[k + 2] ^ Td0[(s2 >>> 24) & 0xff] ^ Td1[(s1 >>> 16) & 0xff] ^
+            Td2[(s0 >>> 8) & 0xff] ^ Td3[s3 & 0xff];
+        t3 = xk[k + 3] ^ Td0[(s3 >>> 24) & 0xff] ^ Td1[(s2 >>> 16) & 0xff] ^
+            Td2[(s1 >>> 8) & 0xff] ^ Td3[s0 & 0xff];
+        k += 4;
+        s0 = t0;
+        s1 = t1;
+        s2 = t2;
+        s3 = t3;
+    }
+    // Last round uses s-box directly and XORs to produce output.
+    s0 = (SBOX1[t0 >>> 24] << 24) | (SBOX1[(t3 >>> 16) & 0xff]) << 16 |
+        (SBOX1[(t2 >>> 8) & 0xff]) << 8 | (SBOX1[t1 & 0xff]);
+    s1 = (SBOX1[t1 >>> 24] << 24) | (SBOX1[(t0 >>> 16) & 0xff]) << 16 |
+        (SBOX1[(t3 >>> 8) & 0xff]) << 8 | (SBOX1[t2 & 0xff]);
+    s2 = (SBOX1[t2 >>> 24] << 24) | (SBOX1[(t1 >>> 16) & 0xff]) << 16 |
+        (SBOX1[(t0 >>> 8) & 0xff]) << 8 | (SBOX1[t3 & 0xff]);
+    s3 = (SBOX1[t3 >>> 24] << 24) | (SBOX1[(t2 >>> 16) & 0xff]) << 16 |
+        (SBOX1[(t1 >>> 8) & 0xff]) << 8 | (SBOX1[t0 & 0xff]);
+    s0 ^= xk[k + 0];
+    s1 ^= xk[k + 1];
+    s2 ^= xk[k + 2];
+    s3 ^= xk[k + 3];
+    binary_1.writeUint32BE(s0, dst, 0);
+    binary_1.writeUint32BE(s1, dst, 4);
+    binary_1.writeUint32BE(s2, dst, 8);
+    binary_1.writeUint32BE(s3, dst, 12);
+}
+//# sourceMappingURL=aes.js.map
+
+/***/ }),
+
 /***/ "./node_modules/@stablelib/binary/lib/binary.js":
 /*!******************************************************!*\
   !*** ./node_modules/@stablelib/binary/lib/binary.js ***!
@@ -8900,6 +9422,470 @@ exports.writeFloat64LE = writeFloat64LE;
 
 /***/ }),
 
+/***/ "./node_modules/@stablelib/chacha/lib/chacha.js":
+/*!******************************************************!*\
+  !*** ./node_modules/@stablelib/chacha/lib/chacha.js ***!
+  \******************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2016 Dmitry Chestnykh
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+/**
+ * Package chacha implements ChaCha stream cipher.
+ */
+var binary_1 = __webpack_require__(/*! @stablelib/binary */ "./node_modules/@stablelib/binary/lib/binary.js");
+var wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+// Number of ChaCha rounds (ChaCha20).
+var ROUNDS = 20;
+// Applies the ChaCha core function to 16-byte input,
+// 32-byte key key, and puts the result into 64-byte array out.
+function core(out, input, key) {
+    var j0 = 0x61707865; // "expa"  -- ChaCha's "sigma" constant
+    var j1 = 0x3320646E; // "nd 3"     for 32-byte keys
+    var j2 = 0x79622D32; // "2-by"
+    var j3 = 0x6B206574; // "te k"
+    var j4 = (key[3] << 24) | (key[2] << 16) | (key[1] << 8) | key[0];
+    var j5 = (key[7] << 24) | (key[6] << 16) | (key[5] << 8) | key[4];
+    var j6 = (key[11] << 24) | (key[10] << 16) | (key[9] << 8) | key[8];
+    var j7 = (key[15] << 24) | (key[14] << 16) | (key[13] << 8) | key[12];
+    var j8 = (key[19] << 24) | (key[18] << 16) | (key[17] << 8) | key[16];
+    var j9 = (key[23] << 24) | (key[22] << 16) | (key[21] << 8) | key[20];
+    var j10 = (key[27] << 24) | (key[26] << 16) | (key[25] << 8) | key[24];
+    var j11 = (key[31] << 24) | (key[30] << 16) | (key[29] << 8) | key[28];
+    var j12 = (input[3] << 24) | (input[2] << 16) | (input[1] << 8) | input[0];
+    var j13 = (input[7] << 24) | (input[6] << 16) | (input[5] << 8) | input[4];
+    var j14 = (input[11] << 24) | (input[10] << 16) | (input[9] << 8) | input[8];
+    var j15 = (input[15] << 24) | (input[14] << 16) | (input[13] << 8) | input[12];
+    var x0 = j0;
+    var x1 = j1;
+    var x2 = j2;
+    var x3 = j3;
+    var x4 = j4;
+    var x5 = j5;
+    var x6 = j6;
+    var x7 = j7;
+    var x8 = j8;
+    var x9 = j9;
+    var x10 = j10;
+    var x11 = j11;
+    var x12 = j12;
+    var x13 = j13;
+    var x14 = j14;
+    var x15 = j15;
+    for (var i = 0; i < ROUNDS; i += 2) {
+        x0 = x0 + x4 | 0;
+        x12 ^= x0;
+        x12 = x12 >>> (32 - 16) | x12 << 16;
+        x8 = x8 + x12 | 0;
+        x4 ^= x8;
+        x4 = x4 >>> (32 - 12) | x4 << 12;
+        x1 = x1 + x5 | 0;
+        x13 ^= x1;
+        x13 = x13 >>> (32 - 16) | x13 << 16;
+        x9 = x9 + x13 | 0;
+        x5 ^= x9;
+        x5 = x5 >>> (32 - 12) | x5 << 12;
+        x2 = x2 + x6 | 0;
+        x14 ^= x2;
+        x14 = x14 >>> (32 - 16) | x14 << 16;
+        x10 = x10 + x14 | 0;
+        x6 ^= x10;
+        x6 = x6 >>> (32 - 12) | x6 << 12;
+        x3 = x3 + x7 | 0;
+        x15 ^= x3;
+        x15 = x15 >>> (32 - 16) | x15 << 16;
+        x11 = x11 + x15 | 0;
+        x7 ^= x11;
+        x7 = x7 >>> (32 - 12) | x7 << 12;
+        x2 = x2 + x6 | 0;
+        x14 ^= x2;
+        x14 = x14 >>> (32 - 8) | x14 << 8;
+        x10 = x10 + x14 | 0;
+        x6 ^= x10;
+        x6 = x6 >>> (32 - 7) | x6 << 7;
+        x3 = x3 + x7 | 0;
+        x15 ^= x3;
+        x15 = x15 >>> (32 - 8) | x15 << 8;
+        x11 = x11 + x15 | 0;
+        x7 ^= x11;
+        x7 = x7 >>> (32 - 7) | x7 << 7;
+        x1 = x1 + x5 | 0;
+        x13 ^= x1;
+        x13 = x13 >>> (32 - 8) | x13 << 8;
+        x9 = x9 + x13 | 0;
+        x5 ^= x9;
+        x5 = x5 >>> (32 - 7) | x5 << 7;
+        x0 = x0 + x4 | 0;
+        x12 ^= x0;
+        x12 = x12 >>> (32 - 8) | x12 << 8;
+        x8 = x8 + x12 | 0;
+        x4 ^= x8;
+        x4 = x4 >>> (32 - 7) | x4 << 7;
+        x0 = x0 + x5 | 0;
+        x15 ^= x0;
+        x15 = x15 >>> (32 - 16) | x15 << 16;
+        x10 = x10 + x15 | 0;
+        x5 ^= x10;
+        x5 = x5 >>> (32 - 12) | x5 << 12;
+        x1 = x1 + x6 | 0;
+        x12 ^= x1;
+        x12 = x12 >>> (32 - 16) | x12 << 16;
+        x11 = x11 + x12 | 0;
+        x6 ^= x11;
+        x6 = x6 >>> (32 - 12) | x6 << 12;
+        x2 = x2 + x7 | 0;
+        x13 ^= x2;
+        x13 = x13 >>> (32 - 16) | x13 << 16;
+        x8 = x8 + x13 | 0;
+        x7 ^= x8;
+        x7 = x7 >>> (32 - 12) | x7 << 12;
+        x3 = x3 + x4 | 0;
+        x14 ^= x3;
+        x14 = x14 >>> (32 - 16) | x14 << 16;
+        x9 = x9 + x14 | 0;
+        x4 ^= x9;
+        x4 = x4 >>> (32 - 12) | x4 << 12;
+        x2 = x2 + x7 | 0;
+        x13 ^= x2;
+        x13 = x13 >>> (32 - 8) | x13 << 8;
+        x8 = x8 + x13 | 0;
+        x7 ^= x8;
+        x7 = x7 >>> (32 - 7) | x7 << 7;
+        x3 = x3 + x4 | 0;
+        x14 ^= x3;
+        x14 = x14 >>> (32 - 8) | x14 << 8;
+        x9 = x9 + x14 | 0;
+        x4 ^= x9;
+        x4 = x4 >>> (32 - 7) | x4 << 7;
+        x1 = x1 + x6 | 0;
+        x12 ^= x1;
+        x12 = x12 >>> (32 - 8) | x12 << 8;
+        x11 = x11 + x12 | 0;
+        x6 ^= x11;
+        x6 = x6 >>> (32 - 7) | x6 << 7;
+        x0 = x0 + x5 | 0;
+        x15 ^= x0;
+        x15 = x15 >>> (32 - 8) | x15 << 8;
+        x10 = x10 + x15 | 0;
+        x5 ^= x10;
+        x5 = x5 >>> (32 - 7) | x5 << 7;
+    }
+    binary_1.writeUint32LE(x0 + j0 | 0, out, 0);
+    binary_1.writeUint32LE(x1 + j1 | 0, out, 4);
+    binary_1.writeUint32LE(x2 + j2 | 0, out, 8);
+    binary_1.writeUint32LE(x3 + j3 | 0, out, 12);
+    binary_1.writeUint32LE(x4 + j4 | 0, out, 16);
+    binary_1.writeUint32LE(x5 + j5 | 0, out, 20);
+    binary_1.writeUint32LE(x6 + j6 | 0, out, 24);
+    binary_1.writeUint32LE(x7 + j7 | 0, out, 28);
+    binary_1.writeUint32LE(x8 + j8 | 0, out, 32);
+    binary_1.writeUint32LE(x9 + j9 | 0, out, 36);
+    binary_1.writeUint32LE(x10 + j10 | 0, out, 40);
+    binary_1.writeUint32LE(x11 + j11 | 0, out, 44);
+    binary_1.writeUint32LE(x12 + j12 | 0, out, 48);
+    binary_1.writeUint32LE(x13 + j13 | 0, out, 52);
+    binary_1.writeUint32LE(x14 + j14 | 0, out, 56);
+    binary_1.writeUint32LE(x15 + j15 | 0, out, 60);
+}
+/**
+ * Encrypt src with ChaCha20 stream generated for the given 32-byte key and
+ * 8-byte (as in original implementation) or 12-byte (as in RFC7539) nonce and
+ * write the result into dst and return it.
+ *
+ * dst and src may be the same, but otherwise must not overlap.
+ *
+ * If nonce is 12 bytes, users should not encrypt more than 256 GiB with the
+ * same key and nonce, otherwise the stream will repeat. The function will
+ * throw error if counter overflows to prevent this.
+ *
+ * If nonce is 8 bytes, the output is practically unlimited (2^70 bytes, which
+ * is more than a million petabytes). However, it is not recommended to
+ * generate 8-byte nonces randomly, as the chance of collision is high.
+ *
+ * Never use the same key and nonce to encrypt more than one message.
+ *
+ * If nonceInplaceCounterLength is not 0, the nonce is assumed to be a 16-byte
+ * array with stream counter in first nonceInplaceCounterLength bytes and nonce
+ * in the last remaining bytes. The counter will be incremented inplace for
+ * each ChaCha block. This is useful if you need to encrypt one stream of data
+ * in chunks.
+ */
+function streamXOR(key, nonce, src, dst, nonceInplaceCounterLength) {
+    if (nonceInplaceCounterLength === void 0) { nonceInplaceCounterLength = 0; }
+    // We only support 256-bit keys.
+    if (key.length !== 32) {
+        throw new Error("ChaCha: key size must be 32 bytes");
+    }
+    if (dst.length < src.length) {
+        throw new Error("ChaCha: destination is shorter than source");
+    }
+    var nc;
+    var counterLength;
+    if (nonceInplaceCounterLength === 0) {
+        if (nonce.length !== 8 && nonce.length !== 12) {
+            throw new Error("ChaCha nonce must be 8 or 12 bytes");
+        }
+        nc = new Uint8Array(16);
+        // First counterLength bytes of nc are counter, starting with zero.
+        counterLength = nc.length - nonce.length;
+        // Last bytes of nc after counterLength are nonce, set them.
+        nc.set(nonce, counterLength);
+    }
+    else {
+        if (nonce.length !== 16) {
+            throw new Error("ChaCha nonce with counter must be 16 bytes");
+        }
+        // This will update passed nonce with counter inplace.
+        nc = nonce;
+        counterLength = nonceInplaceCounterLength;
+    }
+    // Allocate temporary space for ChaCha block.
+    var block = new Uint8Array(64);
+    for (var i = 0; i < src.length; i += 64) {
+        // Generate a block.
+        core(block, nc, key);
+        // XOR block bytes with src into dst.
+        for (var j = i; j < i + 64 && j < src.length; j++) {
+            dst[j] = src[j] ^ block[j - i];
+        }
+        // Increment counter.
+        incrementCounter(nc, 0, counterLength);
+    }
+    // Cleanup temporary space.
+    wipe_1.wipe(block);
+    if (nonceInplaceCounterLength === 0) {
+        // Cleanup counter.
+        wipe_1.wipe(nc);
+    }
+    return dst;
+}
+exports.streamXOR = streamXOR;
+/**
+ * Generate ChaCha20 stream for the given 32-byte key and 8-byte or 12-byte
+ * nonce and write it into dst and return it.
+ *
+ * Never use the same key and nonce to generate more than one stream.
+ *
+ * If nonceInplaceCounterLength is not 0, it behaves the same with respect to
+ * the nonce as described in the streamXOR documentation.
+ *
+ * stream is like streamXOR with all-zero src.
+ */
+function stream(key, nonce, dst, nonceInplaceCounterLength) {
+    if (nonceInplaceCounterLength === void 0) { nonceInplaceCounterLength = 0; }
+    wipe_1.wipe(dst);
+    return streamXOR(key, nonce, dst, dst, nonceInplaceCounterLength);
+}
+exports.stream = stream;
+function incrementCounter(counter, pos, len) {
+    var carry = 1;
+    while (len--) {
+        carry = carry + (counter[pos] & 0xff) | 0;
+        counter[pos] = carry & 0xff;
+        carry >>>= 8;
+        pos++;
+    }
+    if (carry > 0) {
+        throw new Error("ChaCha: counter overflow");
+    }
+}
+//# sourceMappingURL=chacha.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@stablelib/chacha20poly1305/lib/chacha20poly1305.js":
+/*!**************************************************************************!*\
+  !*** ./node_modules/@stablelib/chacha20poly1305/lib/chacha20poly1305.js ***!
+  \**************************************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2016 Dmitry Chestnykh
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+var chacha_1 = __webpack_require__(/*! @stablelib/chacha */ "./node_modules/@stablelib/chacha/lib/chacha.js");
+var poly1305_1 = __webpack_require__(/*! @stablelib/poly1305 */ "./node_modules/@stablelib/poly1305/lib/poly1305.js");
+var wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+var binary_1 = __webpack_require__(/*! @stablelib/binary */ "./node_modules/@stablelib/binary/lib/binary.js");
+var constant_time_1 = __webpack_require__(/*! @stablelib/constant-time */ "./node_modules/@stablelib/constant-time/lib/constant-time.js");
+exports.KEY_LENGTH = 32;
+exports.NONCE_LENGTH = 12;
+exports.TAG_LENGTH = 16;
+var ZEROS = new Uint8Array(16);
+/**
+ * ChaCha20-Poly1305 Authenticated Encryption with Associated Data.
+ *
+ * Defined in RFC7539.
+ */
+var ChaCha20Poly1305 = /** @class */ (function () {
+    /**
+     * Creates a new instance with the given 32-byte key.
+     */
+    function ChaCha20Poly1305(key) {
+        this.nonceLength = exports.NONCE_LENGTH;
+        this.tagLength = exports.TAG_LENGTH;
+        if (key.length !== exports.KEY_LENGTH) {
+            throw new Error("ChaCha20Poly1305 needs 32-byte key");
+        }
+        // Copy key.
+        this._key = new Uint8Array(key);
+    }
+    /**
+     * Encrypts and authenticates plaintext, authenticates associated data,
+     * and returns sealed ciphertext, which includes authentication tag.
+     *
+     * RFC7539 specifies 12 bytes for nonce. It may be this 12-byte nonce
+     * ("IV"), or full 16-byte counter (called "32-bit fixed-common part")
+     * and nonce.
+     *
+     * If dst is given (it must be the size of plaintext + the size of tag
+     * length) the result will be put into it. Dst and plaintext must not
+     * overlap.
+     */
+    ChaCha20Poly1305.prototype.seal = function (nonce, plaintext, associatedData, dst) {
+        if (nonce.length > 16) {
+            throw new Error("ChaCha20Poly1305: incorrect nonce length");
+        }
+        // Allocate space for counter, and set nonce as last bytes of it.
+        var counter = new Uint8Array(16);
+        counter.set(nonce, counter.length - nonce.length);
+        // Generate authentication key by taking first 32-bytes of stream.
+        // We pass full counter, which has 12-byte nonce and 4-byte block counter,
+        // and it will get incremented after generating the block, which is
+        // exactly what we need: we only use the first 32 bytes of 64-byte
+        // ChaCha block and discard the next 32 bytes.
+        var authKey = new Uint8Array(32);
+        chacha_1.stream(this._key, counter, authKey, 4);
+        // Allocate space for sealed ciphertext.
+        var resultLength = plaintext.length + this.tagLength;
+        var result;
+        if (dst) {
+            if (dst.length !== resultLength) {
+                throw new Error("ChaCha20Poly1305: incorrect destination length");
+            }
+            result = dst;
+        }
+        else {
+            result = new Uint8Array(resultLength);
+        }
+        // Encrypt plaintext.
+        chacha_1.streamXOR(this._key, counter, plaintext, result, 4);
+        // Authenticate.
+        // XXX: can "simplify" here: pass full result (which is already padded
+        // due to zeroes prepared for tag), and ciphertext length instead of
+        // subarray of result.
+        this._authenticate(result.subarray(result.length - this.tagLength, result.length), authKey, result.subarray(0, result.length - this.tagLength), associatedData);
+        // Cleanup.
+        wipe_1.wipe(counter);
+        return result;
+    };
+    /**
+     * Authenticates sealed ciphertext (which includes authentication tag) and
+     * associated data, decrypts ciphertext and returns decrypted plaintext.
+     *
+     * RFC7539 specifies 12 bytes for nonce. It may be this 12-byte nonce
+     * ("IV"), or full 16-byte counter (called "32-bit fixed-common part")
+     * and nonce.
+     *
+     * If authentication fails, it returns null.
+     *
+     * If dst is given (it must be of ciphertext length minus tag length),
+     * the result will be put into it. Dst and plaintext must not overlap.
+     */
+    ChaCha20Poly1305.prototype.open = function (nonce, sealed, associatedData, dst) {
+        if (nonce.length > 16) {
+            throw new Error("ChaCha20Poly1305: incorrect nonce length");
+        }
+        // Sealed ciphertext should at least contain tag.
+        if (sealed.length < this.tagLength) {
+            // TODO(dchest): should we throw here instead?
+            return null;
+        }
+        // Allocate space for counter, and set nonce as last bytes of it.
+        var counter = new Uint8Array(16);
+        counter.set(nonce, counter.length - nonce.length);
+        // Generate authentication key by taking first 32-bytes of stream.
+        var authKey = new Uint8Array(32);
+        chacha_1.stream(this._key, counter, authKey, 4);
+        // Authenticate.
+        // XXX: can simplify and avoid allocation: since authenticate()
+        // already allocates tag (from Poly1305.digest(), it can return)
+        // it instead of copying to calculatedTag. But then in seal()
+        // we'll need to copy it.
+        var calculatedTag = new Uint8Array(this.tagLength);
+        this._authenticate(calculatedTag, authKey, sealed.subarray(0, sealed.length - this.tagLength), associatedData);
+        // Constant-time compare tags and return null if they differ.
+        if (!constant_time_1.equal(calculatedTag, sealed.subarray(sealed.length - this.tagLength, sealed.length))) {
+            return null;
+        }
+        // Allocate space for decrypted plaintext.
+        var resultLength = sealed.length - this.tagLength;
+        var result;
+        if (dst) {
+            if (dst.length !== resultLength) {
+                throw new Error("ChaCha20Poly1305: incorrect destination length");
+            }
+            result = dst;
+        }
+        else {
+            result = new Uint8Array(resultLength);
+        }
+        // Decrypt.
+        chacha_1.streamXOR(this._key, counter, sealed.subarray(0, sealed.length - this.tagLength), result, 4);
+        // Cleanup.
+        wipe_1.wipe(counter);
+        return result;
+    };
+    ChaCha20Poly1305.prototype.clean = function () {
+        wipe_1.wipe(this._key);
+        return this;
+    };
+    ChaCha20Poly1305.prototype._authenticate = function (tagOut, authKey, ciphertext, associatedData) {
+        // Initialize Poly1305 with authKey.
+        var h = new poly1305_1.Poly1305(authKey);
+        // Authenticate padded associated data.
+        if (associatedData) {
+            h.update(associatedData);
+            if (associatedData.length % 16 > 0) {
+                h.update(ZEROS.subarray(associatedData.length % 16));
+            }
+        }
+        // Authenticate padded ciphertext.
+        h.update(ciphertext);
+        if (ciphertext.length % 16 > 0) {
+            h.update(ZEROS.subarray(ciphertext.length % 16));
+        }
+        // Authenticate length of associated data.
+        // XXX: can avoid allocation here?
+        var length = new Uint8Array(8);
+        if (associatedData) {
+            binary_1.writeUint64LE(associatedData.length, length);
+        }
+        h.update(length);
+        // Authenticate length of ciphertext.
+        binary_1.writeUint64LE(ciphertext.length, length);
+        h.update(length);
+        // Get tag and copy it into tagOut.
+        var tag = h.digest();
+        for (var i = 0; i < tag.length; i++) {
+            tagOut[i] = tag[i];
+        }
+        // Cleanup.
+        h.clean();
+        wipe_1.wipe(tag);
+        wipe_1.wipe(length);
+    };
+    return ChaCha20Poly1305;
+}());
+exports.ChaCha20Poly1305 = ChaCha20Poly1305;
+//# sourceMappingURL=chacha20poly1305.js.map
+
+/***/ }),
+
 /***/ "./node_modules/@stablelib/constant-time/lib/constant-time.js":
 /*!********************************************************************!*\
   !*** ./node_modules/@stablelib/constant-time/lib/constant-time.js ***!
@@ -8969,6 +9955,340 @@ function equal(a, b) {
 }
 exports.equal = equal;
 //# sourceMappingURL=constant-time.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@stablelib/ctr/lib/ctr.js":
+/*!************************************************!*\
+  !*** ./node_modules/@stablelib/ctr/lib/ctr.js ***!
+  \************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2016 Dmitry Chestnykh
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CTR = void 0;
+const wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+/**
+ * CTR implements counter cipher mode.
+ *
+ * Note that CTR mode is malleable and generally should not be used without
+ * authentication. Instead, use an authenticated encryption mode, such as GCM.
+ */
+class CTR {
+    constructor(cipher, iv) {
+        this._bufpos = 0;
+        // Allocate space for counter.
+        this._counter = new Uint8Array(cipher.blockSize);
+        // Allocate buffer for encrypted block.
+        this._buffer = new Uint8Array(cipher.blockSize);
+        // Set buffer position to length of buffer
+        // so that the first cipher block is generated.
+        this.setCipher(cipher, iv);
+    }
+    setCipher(cipher, iv) {
+        // Reset this._cipher to prevent reusing the existing one,
+        // if this method throws.
+        this._cipher = undefined;
+        if (iv.length !== this._counter.length) {
+            throw new Error("CTR: iv length must be equal to cipher block size");
+        }
+        // Set cipher.
+        this._cipher = cipher;
+        // Copy IV to counter, overwriting it.
+        this._counter.set(iv);
+        // Set buffer position to length of buffer
+        // so that the first cipher block is generated.
+        this._bufpos = this._buffer.length;
+        return this;
+    }
+    clean() {
+        (0, wipe_1.wipe)(this._buffer);
+        (0, wipe_1.wipe)(this._counter);
+        this._bufpos = this._buffer.length;
+        // Cleaning cipher is caller's responsibility,
+        // just remove a reference to it.
+        this._cipher = undefined;
+        return this;
+    }
+    fillBuffer() {
+        this._cipher.encryptBlock(this._counter, this._buffer);
+        this._bufpos = 0;
+        incrementCounter(this._counter);
+    }
+    streamXOR(src, dst) {
+        for (let i = 0; i < src.length; i++) {
+            if (this._bufpos === this._buffer.length) {
+                this.fillBuffer();
+            }
+            dst[i] = src[i] ^ this._buffer[this._bufpos++];
+        }
+    }
+    stream(dst) {
+        for (let i = 0; i < dst.length; i++) {
+            if (this._bufpos === this._buffer.length) {
+                this.fillBuffer();
+            }
+            dst[i] = this._buffer[this._bufpos++];
+        }
+    }
+}
+exports.CTR = CTR;
+function incrementCounter(counter) {
+    let carry = 1;
+    for (let i = counter.length - 1; i >= 0; i--) {
+        carry = carry + (counter[i] & 0xff) | 0;
+        counter[i] = carry & 0xff;
+        carry >>>= 8;
+    }
+    if (carry > 0) {
+        throw new Error("CTR: counter overflow");
+    }
+}
+//# sourceMappingURL=ctr.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@stablelib/gcm/lib/gcm.js":
+/*!************************************************!*\
+  !*** ./node_modules/@stablelib/gcm/lib/gcm.js ***!
+  \************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2016 Dmitry Chestnykh
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.GCM = exports.TAG_LENGTH = exports.NONCE_LENGTH = void 0;
+const ctr_1 = __webpack_require__(/*! @stablelib/ctr */ "./node_modules/@stablelib/ctr/lib/ctr.js");
+const wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+const binary_1 = __webpack_require__(/*! @stablelib/binary */ "./node_modules/@stablelib/binary/lib/binary.js");
+const constant_time_1 = __webpack_require__(/*! @stablelib/constant-time */ "./node_modules/@stablelib/constant-time/lib/constant-time.js");
+exports.NONCE_LENGTH = 12;
+exports.TAG_LENGTH = 16;
+/**
+ * Galois/Counter Mode AEAD
+ *
+ * Defined in NIST SP-800-38D.
+ *
+ * This implementation only supports 12-byte nonces and 16-byte tags:
+ * these parameters are the most secure and most commonly used.
+ */
+class GCM {
+    /**
+     * Creates a new GCM instance with the given block cipher.
+     *
+     * Block size of cipher must be equal to 16.
+     */
+    constructor(cipher) {
+        this.nonceLength = exports.NONCE_LENGTH;
+        this.tagLength = exports.TAG_LENGTH;
+        if (cipher.blockSize !== 16) {
+            throw new Error("GCM supports only 16-byte block cipher");
+        }
+        this._cipher = cipher;
+        // Generate subkey by encrypting zero bytes.
+        this._subkey = new Uint8Array(this._cipher.blockSize);
+        // XXX: can avoid allocation here.
+        this._cipher.encryptBlock(new Uint8Array(this._cipher.blockSize), this._subkey);
+    }
+    /**
+     * Encrypts and authenticates plaintext, authenticates associated data,
+     * and returns sealed ciphertext, which includes authentication tag.
+     *
+     * If dst is given (it must be the size of plaintext + the size of tag length)
+     * the result will be put into it. Dst and plaintext must not overlap.
+     */
+    seal(nonce, plaintext, associatedData, dst) {
+        if (nonce.length !== this.nonceLength) {
+            throw new Error("GCM: incorrect nonce length");
+        }
+        const blockSize = this._cipher.blockSize;
+        // Allocate space for sealed ciphertext.
+        const resultLength = plaintext.length + this.tagLength;
+        let result;
+        if (dst) {
+            if (dst.length !== resultLength) {
+                throw new Error("GCM: incorrect destination length");
+            }
+            result = dst;
+        }
+        else {
+            result = new Uint8Array(resultLength);
+        }
+        // Put nonce into the first part of counter.
+        const counter = new Uint8Array(blockSize);
+        counter.set(nonce);
+        // Set the last part to 1 (because we used 0 for subkey).
+        counter[counter.length - 1] = 1;
+        // Generate tag mask by encrypting counter.
+        const tagMask = new Uint8Array(blockSize);
+        this._cipher.encryptBlock(counter, tagMask);
+        // Increment counter.
+        counter[counter.length - 1] = 2;
+        // Encrypt plaintext in CTR mode.
+        // TODO(dchest): counter is a 32-byte value, so add
+        // assertion for plaintext length to prevent overflow?
+        // XXX: can avoid allocation by pre-allocating CTR and using setCipher() here.
+        const ctr = new ctr_1.CTR(this._cipher, counter);
+        ctr.streamXOR(plaintext, result);
+        ctr.clean();
+        // Authenticate.
+        this._authenticate(result.subarray(result.length - this.tagLength, result.length), tagMask, result.subarray(0, result.length - this.tagLength), associatedData);
+        // Cleanup.
+        (0, wipe_1.wipe)(counter);
+        (0, wipe_1.wipe)(tagMask);
+        return result;
+    }
+    /**
+     * Authenticates sealed ciphertext (which includes authentication tag) and
+     * associated data, decrypts ciphertext and returns decrypted plaintext.
+     *
+     * If authentication fails, it returns null.
+     *
+     * If dst is given (it must be of ciphertext length minus tag length),
+     * the result will be put into it. Dst and plaintext must not overlap.
+     */
+    open(nonce, sealed, associatedData, dst) {
+        if (nonce.length !== this.nonceLength) {
+            throw new Error("GCM: incorrect nonce length");
+        }
+        // Sealed ciphertext should at least contain tag.
+        if (sealed.length < this.tagLength) {
+            // TODO(dchest): should we throw here instead?
+            return null;
+        }
+        const blockSize = this._cipher.blockSize;
+        // Put nonce into the first part of counter.
+        const counter = new Uint8Array(blockSize);
+        counter.set(nonce);
+        // Set the last part to 1 (because we used 0 for subkey).
+        counter[counter.length - 1] = 1;
+        // Generate tag mask by encrypting counter.
+        const tagMask = new Uint8Array(blockSize);
+        this._cipher.encryptBlock(counter, tagMask);
+        // Increment counter.
+        counter[counter.length - 1] = 2;
+        // Authenticate.
+        const calculatedTag = new Uint8Array(this.tagLength);
+        this._authenticate(calculatedTag, tagMask, sealed.subarray(0, sealed.length - this.tagLength), associatedData);
+        // Constant-time compare tags and return null if they differ.
+        if (!(0, constant_time_1.equal)(calculatedTag, sealed.subarray(sealed.length - this.tagLength, sealed.length))) {
+            return null;
+        }
+        // Allocate space for decrypted plaintext.
+        const resultLength = sealed.length - this.tagLength;
+        let result;
+        if (dst) {
+            if (dst.length !== resultLength) {
+                throw new Error("GCM: incorrect destination length");
+            }
+            result = dst;
+        }
+        else {
+            result = new Uint8Array(resultLength);
+        }
+        // Decrypt in CTR mode.
+        // XXX: can avoid allocation by pre-allocating CTR and using setCipher() here.
+        const ctr = new ctr_1.CTR(this._cipher, counter);
+        ctr.streamXOR(sealed.subarray(0, sealed.length - this.tagLength), result);
+        ctr.clean();
+        // Cleanup.
+        (0, wipe_1.wipe)(counter);
+        (0, wipe_1.wipe)(tagMask);
+        return result;
+    }
+    clean() {
+        (0, wipe_1.wipe)(this._subkey);
+        // Cleaning cipher is caller's responsibility.
+        return this;
+    }
+    _authenticate(tagOut, tagMask, ciphertext, associatedData) {
+        const blockSize = this._cipher.blockSize;
+        // Authenticate associated data.
+        if (associatedData) {
+            for (let i = 0; i < associatedData.length; i += blockSize) {
+                const slice = associatedData.subarray(i, Math.min(i + blockSize, associatedData.length));
+                addmul(tagOut, slice, this._subkey);
+            }
+        }
+        // Authenticate ciphertext.
+        for (let i = 0; i < ciphertext.length; i += blockSize) {
+            const slice = ciphertext.subarray(i, Math.min(i + blockSize, ciphertext.length));
+            addmul(tagOut, slice, this._subkey);
+        }
+        // Make a block of associated data and ciphertext (plaintext) bit lengths.
+        // XXX: can avoid allocation here?
+        const lengthsBlock = new Uint8Array(blockSize);
+        if (associatedData) {
+            writeBitLength(associatedData.length, lengthsBlock, 0);
+        }
+        writeBitLength(ciphertext.length, lengthsBlock, 8);
+        addmul(tagOut, lengthsBlock, this._subkey);
+        // XOR tag mask to get the final tag value.
+        for (let i = 0; i < tagMask.length; i++) {
+            tagOut[i] ^= tagMask[i];
+        }
+        (0, wipe_1.wipe)(lengthsBlock);
+    }
+}
+exports.GCM = GCM;
+// Writes big-endian 8-byte bit length of the given byte length
+// into dst at the given offset.
+function writeBitLength(byteLength, dst, offset = 0) {
+    const hi = (byteLength / 0x20000000) | 0;
+    const lo = byteLength << 3;
+    (0, binary_1.writeUint32BE)(hi, dst, offset + 0);
+    (0, binary_1.writeUint32BE)(lo, dst, offset + 4);
+}
+/**
+ * Add and multiply in GF(2^128)
+ *
+ * a = (a + x) * y in the finite field
+ *
+ * a is 16 bytes
+ * y is 16 bytes
+ * x is 0-16 bytes, if x.length <= 16; x is implicitly 0-padded
+ *
+ * Masking idea from Mike Belopuhov's implementation,
+ * that credits John-Mark Gurney for the idea.
+ * http://cvsweb.openbsd.org/cgi-bin/cvsweb/src/sys/crypto/gmac.c
+ *
+ * Addition with implicit padding before multiplication
+ * is due to Daniel J. Bernstein's implementation in SUPERCOP.
+ */
+function addmul(a, x, y) {
+    // Add: a += x
+    for (let i = 0; i < x.length; i++) {
+        a[i] ^= x[i];
+    }
+    // Multiply: a *= y
+    let v0 = (y[3] | y[2] << 8 | y[1] << 16 | y[0] << 24);
+    let v1 = (y[7] | y[6] << 8 | y[5] << 16 | y[4] << 24);
+    let v2 = (y[11] | y[10] << 8 | y[9] << 16 | y[8] << 24);
+    let v3 = (y[15] | y[14] << 8 | y[13] << 16 | y[12] << 24);
+    let z0 = 0, z1 = 0, z2 = 0, z3 = 0;
+    for (let i = 0; i < 128; i++) {
+        let mask = ~((((-(a[i >> 3] & (1 << (~i & 7)))) >>> 31) & 1) - 1);
+        z0 ^= v0 & mask;
+        z1 ^= v1 & mask;
+        z2 ^= v2 & mask;
+        z3 ^= v3 & mask;
+        mask = ~((v3 & 1) - 1);
+        v3 = (v2 << 31) | (v3 >>> 1);
+        v2 = (v1 << 31) | (v2 >>> 1);
+        v1 = (v0 << 31) | (v1 >>> 1);
+        v0 = (v0 >>> 1) ^ (0xe1000000 & mask);
+    }
+    (0, binary_1.writeUint32BE)(z0, a, 0);
+    (0, binary_1.writeUint32BE)(z1, a, 4);
+    (0, binary_1.writeUint32BE)(z2, a, 8);
+    (0, binary_1.writeUint32BE)(z3, a, 12);
+}
+//# sourceMappingURL=gcm.js.map
 
 /***/ }),
 
@@ -10813,6 +12133,349 @@ function sharedKey(mySecretKey, theirPublicKey, rejectZero = false) {
 }
 exports.sharedKey = sharedKey;
 //# sourceMappingURL=x25519.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@stablelib/xchacha20/lib/xchacha20.js":
+/*!************************************************************!*\
+  !*** ./node_modules/@stablelib/xchacha20/lib/xchacha20.js ***!
+  \************************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2019 Kyle Den Hartog
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+/**
+ * Package xchacha20 implements XChaCha20 stream cipher.
+ */
+var binary_1 = __webpack_require__(/*! @stablelib/binary */ "./node_modules/@stablelib/binary/lib/binary.js");
+var wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+var chacha_1 = __webpack_require__(/*! @stablelib/chacha */ "./node_modules/@stablelib/chacha/lib/chacha.js");
+// Number of ChaCha rounds (ChaCha20).
+var ROUNDS = 20;
+/**
+ * Encrypt src with XChaCha20 stream generated for the given 32-byte key and
+ * 8-byte (as in original implementation) or 12-byte (as in RFC7539) nonce and
+ * write the result into dst and return it.
+ *
+ * dst and src may be the same, but otherwise must not overlap.
+ *
+ * Nonce length is set in such a way that given it's generated via a CSPRNG
+ * then there's little concern of collision for roughly 2^96 messages while
+ * reusing a secret key and not encountering nonce reuse vulnerabilities.
+ */
+function streamXOR(key, nonce, src, dst) {
+    if (nonce.length !== 24) {
+        throw new Error("XChaCha20 nonce must be 24 bytes");
+    }
+    // Use HChaCha one-way function to transform first 16 bytes of
+    // 24-byte extended nonce and key into a new key for Salsa
+    // stream -- "subkey".
+    var subkey = hchacha(key, nonce.subarray(0, 16), new Uint8Array(32));
+    // Use last 8 bytes of 24-byte extended nonce as an actual nonce prefixed by 4 zero bytes,
+    // and a subkey derived in the previous step as key to encrypt.
+    var modifiedNonce = new Uint8Array(12);
+    modifiedNonce.set(nonce.subarray(16), 4);
+    // If nonceInplaceCounterLength > 0, we'll still pass the correct
+    // nonce || counter, as we don't limit the end of nonce subarray.
+    var result = chacha_1.streamXOR(subkey, modifiedNonce, src, dst);
+    // Clean subkey.
+    wipe_1.wipe(subkey);
+    return result;
+}
+exports.streamXOR = streamXOR;
+/**
+ * Generate XChaCha20 stream for the given 32-byte key and 12-byte
+ * nonce (last 8 bytes of 24 byte nonce prefixed with 4 zero bytes)
+ * and write it into dst and return it.
+ *
+ * Nonces MUST be generated using an CSPRNG to generate a sufficiently
+ * random nonce such that a collision is highly unlikely to occur.
+ *
+ * stream is like streamXOR with all-zero src.
+ */
+function stream(key, nonce, dst) {
+    wipe_1.wipe(dst);
+    return streamXOR(key, nonce, dst, dst);
+}
+exports.stream = stream;
+/**
+ * HChaCha is a one-way function used in XChaCha to extend nonce.
+ *
+ * It takes 32-byte key and 16-byte src and writes 32-byte result
+ * into dst and returns it.
+ */
+function hchacha(key, src, dst) {
+    var j0 = 0x61707865; // "expa"  -- ChaCha's "sigma" constant
+    var j1 = 0x3320646e; // "nd 3"     for 32-byte keys
+    var j2 = 0x79622d32; // "2-by"
+    var j3 = 0x6b206574; // "te k"
+    var j4 = (key[3] << 24) | (key[2] << 16) | (key[1] << 8) | key[0];
+    var j5 = (key[7] << 24) | (key[6] << 16) | (key[5] << 8) | key[4];
+    var j6 = (key[11] << 24) | (key[10] << 16) | (key[9] << 8) | key[8];
+    var j7 = (key[15] << 24) | (key[14] << 16) | (key[13] << 8) | key[12];
+    var j8 = (key[19] << 24) | (key[18] << 16) | (key[17] << 8) | key[16];
+    var j9 = (key[23] << 24) | (key[22] << 16) | (key[21] << 8) | key[20];
+    var j10 = (key[27] << 24) | (key[26] << 16) | (key[25] << 8) | key[24];
+    var j11 = (key[31] << 24) | (key[30] << 16) | (key[29] << 8) | key[28];
+    var j12 = (src[3] << 24) | (src[2] << 16) | (src[1] << 8) | src[0];
+    var j13 = (src[7] << 24) | (src[6] << 16) | (src[5] << 8) | src[4];
+    var j14 = (src[11] << 24) | (src[10] << 16) | (src[9] << 8) | src[8];
+    var j15 = (src[15] << 24) | (src[14] << 16) | (src[13] << 8) | src[12];
+    var x0 = j0;
+    var x1 = j1;
+    var x2 = j2;
+    var x3 = j3;
+    var x4 = j4;
+    var x5 = j5;
+    var x6 = j6;
+    var x7 = j7;
+    var x8 = j8;
+    var x9 = j9;
+    var x10 = j10;
+    var x11 = j11;
+    var x12 = j12;
+    var x13 = j13;
+    var x14 = j14;
+    var x15 = j15;
+    for (var i = 0; i < ROUNDS; i += 2) {
+        x0 = (x0 + x4) | 0;
+        x12 ^= x0;
+        x12 = (x12 >>> (32 - 16)) | (x12 << 16);
+        x8 = (x8 + x12) | 0;
+        x4 ^= x8;
+        x4 = (x4 >>> (32 - 12)) | (x4 << 12);
+        x1 = (x1 + x5) | 0;
+        x13 ^= x1;
+        x13 = (x13 >>> (32 - 16)) | (x13 << 16);
+        x9 = (x9 + x13) | 0;
+        x5 ^= x9;
+        x5 = (x5 >>> (32 - 12)) | (x5 << 12);
+        x2 = (x2 + x6) | 0;
+        x14 ^= x2;
+        x14 = (x14 >>> (32 - 16)) | (x14 << 16);
+        x10 = (x10 + x14) | 0;
+        x6 ^= x10;
+        x6 = (x6 >>> (32 - 12)) | (x6 << 12);
+        x3 = (x3 + x7) | 0;
+        x15 ^= x3;
+        x15 = (x15 >>> (32 - 16)) | (x15 << 16);
+        x11 = (x11 + x15) | 0;
+        x7 ^= x11;
+        x7 = (x7 >>> (32 - 12)) | (x7 << 12);
+        x2 = (x2 + x6) | 0;
+        x14 ^= x2;
+        x14 = (x14 >>> (32 - 8)) | (x14 << 8);
+        x10 = (x10 + x14) | 0;
+        x6 ^= x10;
+        x6 = (x6 >>> (32 - 7)) | (x6 << 7);
+        x3 = (x3 + x7) | 0;
+        x15 ^= x3;
+        x15 = (x15 >>> (32 - 8)) | (x15 << 8);
+        x11 = (x11 + x15) | 0;
+        x7 ^= x11;
+        x7 = (x7 >>> (32 - 7)) | (x7 << 7);
+        x1 = (x1 + x5) | 0;
+        x13 ^= x1;
+        x13 = (x13 >>> (32 - 8)) | (x13 << 8);
+        x9 = (x9 + x13) | 0;
+        x5 ^= x9;
+        x5 = (x5 >>> (32 - 7)) | (x5 << 7);
+        x0 = (x0 + x4) | 0;
+        x12 ^= x0;
+        x12 = (x12 >>> (32 - 8)) | (x12 << 8);
+        x8 = (x8 + x12) | 0;
+        x4 ^= x8;
+        x4 = (x4 >>> (32 - 7)) | (x4 << 7);
+        x0 = (x0 + x5) | 0;
+        x15 ^= x0;
+        x15 = (x15 >>> (32 - 16)) | (x15 << 16);
+        x10 = (x10 + x15) | 0;
+        x5 ^= x10;
+        x5 = (x5 >>> (32 - 12)) | (x5 << 12);
+        x1 = (x1 + x6) | 0;
+        x12 ^= x1;
+        x12 = (x12 >>> (32 - 16)) | (x12 << 16);
+        x11 = (x11 + x12) | 0;
+        x6 ^= x11;
+        x6 = (x6 >>> (32 - 12)) | (x6 << 12);
+        x2 = (x2 + x7) | 0;
+        x13 ^= x2;
+        x13 = (x13 >>> (32 - 16)) | (x13 << 16);
+        x8 = (x8 + x13) | 0;
+        x7 ^= x8;
+        x7 = (x7 >>> (32 - 12)) | (x7 << 12);
+        x3 = (x3 + x4) | 0;
+        x14 ^= x3;
+        x14 = (x14 >>> (32 - 16)) | (x14 << 16);
+        x9 = (x9 + x14) | 0;
+        x4 ^= x9;
+        x4 = (x4 >>> (32 - 12)) | (x4 << 12);
+        x2 = (x2 + x7) | 0;
+        x13 ^= x2;
+        x13 = (x13 >>> (32 - 8)) | (x13 << 8);
+        x8 = (x8 + x13) | 0;
+        x7 ^= x8;
+        x7 = (x7 >>> (32 - 7)) | (x7 << 7);
+        x3 = (x3 + x4) | 0;
+        x14 ^= x3;
+        x14 = (x14 >>> (32 - 8)) | (x14 << 8);
+        x9 = (x9 + x14) | 0;
+        x4 ^= x9;
+        x4 = (x4 >>> (32 - 7)) | (x4 << 7);
+        x1 = (x1 + x6) | 0;
+        x12 ^= x1;
+        x12 = (x12 >>> (32 - 8)) | (x12 << 8);
+        x11 = (x11 + x12) | 0;
+        x6 ^= x11;
+        x6 = (x6 >>> (32 - 7)) | (x6 << 7);
+        x0 = (x0 + x5) | 0;
+        x15 ^= x0;
+        x15 = (x15 >>> (32 - 8)) | (x15 << 8);
+        x10 = (x10 + x15) | 0;
+        x5 ^= x10;
+        x5 = (x5 >>> (32 - 7)) | (x5 << 7);
+    }
+    binary_1.writeUint32LE(x0, dst, 0);
+    binary_1.writeUint32LE(x1, dst, 4);
+    binary_1.writeUint32LE(x2, dst, 8);
+    binary_1.writeUint32LE(x3, dst, 12);
+    binary_1.writeUint32LE(x12, dst, 16);
+    binary_1.writeUint32LE(x13, dst, 20);
+    binary_1.writeUint32LE(x14, dst, 24);
+    binary_1.writeUint32LE(x15, dst, 28);
+    return dst;
+}
+exports.hchacha = hchacha;
+//# sourceMappingURL=xchacha20.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@stablelib/xchacha20poly1305/lib/xchacha20poly1305.js":
+/*!****************************************************************************!*\
+  !*** ./node_modules/@stablelib/xchacha20poly1305/lib/xchacha20poly1305.js ***!
+  \****************************************************************************/
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+// Copyright (C) 2019 Kyle Den Hartog
+// MIT License. See LICENSE file for details.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+var xchacha20_1 = __webpack_require__(/*! @stablelib/xchacha20 */ "./node_modules/@stablelib/xchacha20/lib/xchacha20.js");
+var chacha20poly1305_1 = __webpack_require__(/*! @stablelib/chacha20poly1305 */ "./node_modules/@stablelib/chacha20poly1305/lib/chacha20poly1305.js");
+var wipe_1 = __webpack_require__(/*! @stablelib/wipe */ "./node_modules/@stablelib/wipe/lib/wipe.js");
+exports.KEY_LENGTH = 32;
+exports.NONCE_LENGTH = 24;
+exports.TAG_LENGTH = 16;
+/**
+ * XChaCha20-Poly1305 Authenticated Encryption with Associated Data.
+ *
+ * Defined in draft-irtf-cfrg-xchacha-01.
+ * See https://tools.ietf.org/html/draft-irtf-cfrg-xchacha-01
+ */
+var XChaCha20Poly1305 = /** @class */ (function () {
+    /**
+     * Creates a new instance with the given 32-byte key.
+     */
+    function XChaCha20Poly1305(key) {
+        this.nonceLength = exports.NONCE_LENGTH;
+        this.tagLength = exports.TAG_LENGTH;
+        if (key.length !== exports.KEY_LENGTH) {
+            throw new Error("ChaCha20Poly1305 needs 32-byte key");
+        }
+        // Copy key.
+        this._key = new Uint8Array(key);
+    }
+    /**
+     * Encrypts and authenticates plaintext, authenticates associated data,
+     * and returns sealed ciphertext, which includes authentication tag.
+     *
+     * draft-irtf-cfrg-xchacha-01 defines a 24 byte nonce (192 bits) which
+     * uses the first 16 bytes of the nonce and the secret key with
+     * HChaCha to generate an initial subkey. The last 8 bytes of the nonce
+     * are then prefixed with 4 zero bytes and then provided with the subkey
+     * to the ChaCha20Poly1305 implementation.
+     *
+     * If dst is given (it must be the size of plaintext + the size of tag
+     * length) the result will be put into it. Dst and plaintext must not
+     * overlap.
+     */
+    XChaCha20Poly1305.prototype.seal = function (nonce, plaintext, associatedData, dst) {
+        if (nonce.length !== 24) {
+            throw new Error("XChaCha20Poly1305: incorrect nonce length");
+        }
+        // Use HSalsa one-way function to transform first 16 bytes of
+        // 24-byte extended nonce and key into a new key for Salsa
+        // stream -- "subkey".
+        var subKey = xchacha20_1.hchacha(this._key, nonce.subarray(0, 16), new Uint8Array(32));
+        // Use last 8 bytes of 24-byte extended nonce as an actual nonce prefixed by 4 zero bytes,
+        // and a subkey derived in the previous step as key to encrypt.
+        var modifiedNonce = new Uint8Array(12);
+        modifiedNonce.set(nonce.subarray(16), 4);
+        var chaChaPoly = new chacha20poly1305_1.ChaCha20Poly1305(subKey);
+        var result = chaChaPoly.seal(modifiedNonce, plaintext, associatedData, dst);
+        wipe_1.wipe(subKey);
+        wipe_1.wipe(modifiedNonce);
+        chaChaPoly.clean();
+        return result;
+    };
+    /**
+     * Authenticates sealed ciphertext (which includes authentication tag) and
+     * associated data, decrypts ciphertext and returns decrypted plaintext.
+     *
+     * draft-irtf-cfrg-xchacha-01 defines a 24 byte nonce (192 bits) which
+     * then uses the first 16 bytes of the nonce and the secret key with
+     * Hchacha to generate an initial subkey. The last 8 bytes of the nonce
+     * are then prefixed with 4 zero bytes and then provided with the subkey
+     * to the chacha20poly1305 implementation.
+     *
+     * If authentication fails, it returns null.
+     *
+     * If dst is given (it must be the size of plaintext + the size of tag
+     * length) the result will be put into it. Dst and plaintext must not
+     * overlap.
+     */
+    XChaCha20Poly1305.prototype.open = function (nonce, sealed, associatedData, dst) {
+        if (nonce.length !== 24) {
+            throw new Error("XChaCha20Poly1305: incorrect nonce length");
+        }
+        // Sealed ciphertext should at least contain tag.
+        if (sealed.length < this.tagLength) {
+            // TODO(dchest): should we throw here instead?
+            return null;
+        }
+        /**
+        * Generate subKey by using HChaCha20 function as defined
+        * in section 2 step 1 of draft-irtf-cfrg-xchacha-01
+        */
+        var subKey = xchacha20_1.hchacha(this._key, nonce.subarray(0, 16), new Uint8Array(32));
+        /**
+        * Generate Nonce as defined - remaining 8 bytes of the nonce prefixed with
+        * 4 zero bytes
+        */
+        var modifiedNonce = new Uint8Array(12);
+        modifiedNonce.set(nonce.subarray(16), 4);
+        /**
+         * Authenticate and decrypt by calling into chacha20poly1305.
+         */
+        var chaChaPoly = new chacha20poly1305_1.ChaCha20Poly1305(subKey);
+        var result = chaChaPoly.open(modifiedNonce, sealed, associatedData, dst);
+        wipe_1.wipe(subKey);
+        wipe_1.wipe(modifiedNonce);
+        chaChaPoly.clean();
+        return result;
+    };
+    XChaCha20Poly1305.prototype.clean = function () {
+        wipe_1.wipe(this._key);
+        return this;
+    };
+    return XChaCha20Poly1305;
+}());
+exports.XChaCha20Poly1305 = XChaCha20Poly1305;
+//# sourceMappingURL=xchacha20poly1305.js.map
 
 /***/ }),
 
@@ -19606,6 +21269,4168 @@ __webpack_require__.r(__webpack_exports__);
 
 /***/ }),
 
+/***/ "./node_modules/@veramo/did-comm/build/didcomm.js":
+/*!********************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/didcomm.js ***!
+  \********************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   DIDComm: () => (/* binding */ DIDComm)
+/* harmony export */ });
+/* harmony import */ var did_jwt__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! did-jwt */ "./node_modules/did-jwt/lib/index.module.js");
+/* harmony import */ var did_resolver__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! did-resolver */ "./node_modules/did-resolver/lib/resolver.module.js");
+/* harmony import */ var _encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./encryption/a256kw-encrypters.js */ "./node_modules/@veramo/did-comm/build/encryption/a256kw-encrypters.js");
+/* harmony import */ var _encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./encryption/xc20pkw-encrypters.js */ "./node_modules/@veramo/did-comm/build/encryption/xc20pkw-encrypters.js");
+/* harmony import */ var _plugin_schema_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./plugin.schema.js */ "./node_modules/@veramo/did-comm/build/plugin.schema.js");
+/* harmony import */ var uuid__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! uuid */ "./node_modules/uuid/dist/esm-browser/v4.js");
+/* harmony import */ var _utils_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./utils.js */ "./node_modules/@veramo/did-comm/build/utils.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var _transports_transports_js__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./transports/transports.js */ "./node_modules/@veramo/did-comm/build/transports/transports.js");
+/* harmony import */ var _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./types/message-types.js */ "./node_modules/@veramo/did-comm/build/types/message-types.js");
+
+
+
+
+
+
+
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_6__('veramo:did-comm:action-handler');
+/**
+ * DID Comm plugin for {@link @veramo/core#Agent}
+ *
+ * This plugin provides a method of creating an encrypted message according to the initial
+ * {@link https://github.com/decentralized-identifier/DIDComm-js | DIDComm-js} implementation.
+ *
+ * @remarks Be advised that this spec is still not final and that this protocol may need to change.
+ *
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class DIDComm {
+    transports;
+    /** Plugin methods */
+    methods;
+    schema = _plugin_schema_js__WEBPACK_IMPORTED_MODULE_3__.schema.IDIDComm;
+    /**
+     * Constructor that takes a list of {@link IDIDCommTransport} objects.
+     * @param transports - A list of {@link IDIDCommTransport} objects. Defaults to
+     *   {@link @veramo/did-comm#DIDCommHttpTransport | DIDCommHttpTransport}
+     */
+    constructor({ transports = [new _transports_transports_js__WEBPACK_IMPORTED_MODULE_7__.DIDCommHttpTransport()] } = {}) {
+        this.transports = transports;
+        this.methods = {
+            sendMessageDIDCommAlpha1: this.sendMessageDIDCommAlpha1.bind(this),
+            getDIDCommMessageMediaType: this.getDidCommMessageMediaType.bind(this),
+            unpackDIDCommMessage: this.unpackDIDCommMessage.bind(this),
+            packDIDCommMessage: this.packDIDCommMessage.bind(this),
+            sendDIDCommMessage: this.sendDIDCommMessage.bind(this),
+        };
+    }
+    /** {@inheritdoc IDIDComm.packDIDCommMessage} */
+    async packDIDCommMessage(args, context) {
+        switch (args.packing) {
+            case 'authcrypt': // intentionally omitting break
+            case 'anoncrypt':
+                return this.packDIDCommMessageJWE(args, context);
+            case 'none':
+                const message = {
+                    ...args.message,
+                    typ: _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.PLAIN,
+                };
+                return { message: JSON.stringify(message) };
+            case 'jws':
+                return this.packDIDCommMessageJWS(args, context);
+            default:
+                throw new Error(`not_implemented: packing messages as ${args.packing} is not supported yet`);
+        }
+    }
+    async packDIDCommMessageJWS(args, context) {
+        const message = args.message;
+        let keyRef = args.keyRef;
+        let kid;
+        // check that the message has from field that is managed
+        let managedSender;
+        try {
+            managedSender = await context.agent.didManagerGet({ did: message.from || '' });
+        }
+        catch (e) {
+            debug(`message.from(${message.from}) is not managed by this agent`);
+        }
+        if (!message.from || !(0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(managedSender)) {
+            throw new Error('invalid_argument: `from` field must be a DID managed by this agent');
+        }
+        // obtain sender signing key(s) from authentication section
+        const senderKeys = await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.mapIdentifierKeysToDoc)(managedSender, 'authentication', context, args.resolutionOptions);
+        // try to find a managed signing key that matches keyRef
+        let signingKey = null;
+        if ((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(keyRef)) {
+            signingKey = senderKeys.find((key) => key.kid === keyRef || key.meta.verificationMethod.id === keyRef);
+        }
+        // otherwise use the first available one.
+        signingKey = signingKey ? signingKey : senderKeys[0];
+        if (!signingKey) {
+            throw new Error(`key_not_found: could not locate a suitable signing key for ${message.from}`);
+        }
+        else {
+            kid = signingKey.meta.verificationMethod.id;
+        }
+        let alg;
+        if (signingKey.type === 'Ed25519') {
+            alg = 'EdDSA';
+        }
+        else if (signingKey.type === 'Secp256k1') {
+            alg = 'ES256K';
+        }
+        else {
+            throw new Error(`not_supported: key of type ${signingKey.type} is not supported for JWS didcomm message`);
+        }
+        // construct the protected header with alg, typ and kid
+        const headerObj = { alg, kid, typ: _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.SIGNED };
+        const header = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.encodeJoseBlob)(headerObj);
+        const payload = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.encodeJoseBlob)(args.message);
+        // construct signing input and obtain signature
+        const signingInput = header + '.' + payload;
+        const signature = await context.agent.keyManagerSign({
+            data: signingInput,
+            encoding: 'utf-8',
+            keyRef: signingKey.kid,
+            algorithm: alg,
+        });
+        // create flattened JWS
+        const packedMessage = {
+            protected: header,
+            payload,
+            signature,
+        };
+        // serialize flattened JWS JSON and return
+        return { message: JSON.stringify(packedMessage) };
+    }
+    async packDIDCommMessageJWE(args, context) {
+        // 1. check if args.packing requires authentication and map sender key to skid
+        let senderECDH = null;
+        let keyRef = args.keyRef;
+        let protectedHeader = {
+            typ: _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.ENCRYPTED,
+        };
+        if (args.packing === 'authcrypt') {
+            // TODO: what to do about from_prior?
+            if (!args?.message?.from) {
+                throw new Error(`invalid_argument: cannot create authenticated did-comm message without a 'from' field`);
+            }
+            //    1.1 check that args.message.from is a managed DID
+            const sender = await context.agent.didManagerGet({ did: args?.message?.from });
+            //    1.2 match key agreement keys from DID to managed keys
+            const senderKeys = await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.mapIdentifierKeysToDoc)(sender, 'keyAgreement', context, args.resolutionOptions);
+            // try to find a sender key by keyRef, otherwise pick the first one
+            let senderKey;
+            if ((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(keyRef)) {
+                senderKey = senderKeys.find((key) => key.kid === keyRef || key.meta.verificationMethod.id === keyRef);
+            }
+            senderKey = senderKey || senderKeys[0];
+            //    1.3 use kid from DID doc(skid) + local IKey to bundle a sender key
+            if (senderKey) {
+                senderECDH = (0,_utils_js__WEBPACK_IMPORTED_MODULE_4__.createEcdhWrapper)(senderKey.kid, context);
+                protectedHeader = { ...protectedHeader, skid: senderKey.meta.verificationMethod.id };
+            }
+            else {
+                throw new Error(`key_not_found: could not map an agent key to an skid for ${args?.message?.from}`);
+            }
+        }
+        const defaults = {
+            alg: args.packing === 'authcrypt' ? 'ECDH-1PU+A256KW' : 'ECDH-ES+A256KW',
+            enc: 'A256GCM', // 'XC20P' or 'A256CBC-HS512' can also be specified
+        };
+        const options = { ...defaults, ...args.options };
+        let recipients = [];
+        async function computeRecipients(to, resolutionOptions) {
+            // 2.1 resolve DID for "to"
+            const didDocument = await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.resolveDidOrThrow)(to, context, resolutionOptions);
+            // 2.2 extract all recipient key agreement keys and normalize them
+            const keyAgreementKeys = (await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.dereferenceDidKeys)(didDocument, 'keyAgreement', context))
+                .filter((k) => k.publicKeyHex?.length > 0)
+                .filter((k) => (args.options?.recipientKids ? args.options?.recipientKids.includes(k.id) : true));
+            if (keyAgreementKeys.length === 0) {
+                throw new Error(`key_not_found: no key agreement keys found for recipient ${to}`);
+            }
+            // 2.3 get public key bytes and key IDs for supported recipient keys
+            const tempRecipients = keyAgreementKeys
+                .map((pk) => {
+                // FIXME: only supporting X25519 keys for now. Add support for P-256 and P-384 & others
+                const { publicKeyHex, keyType } = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.extractPublicKeyHex)(pk, true);
+                if (keyType === 'X25519') {
+                    return { kid: pk.id, publicKeyBytes: (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.hexToBytes)(publicKeyHex), keyType: pk.type };
+                }
+                else {
+                    debug(`not_supported: key agreement key type ${pk.type} is not supported for encryption`);
+                    return null;
+                }
+            })
+                .filter(_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined);
+            if (tempRecipients.length === 0) {
+                throw new Error(`not_supported: no compatible key agreement keys found for recipient ${to}`);
+            }
+            return tempRecipients;
+        }
+        const recipientDIDs = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.asArray)(args.message.to).concat((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.asArray)(args.options?.bcc));
+        for (const to of recipientDIDs) {
+            recipients.push(...(await computeRecipients(to)));
+        }
+        // 3. create Encrypter for each recipient
+        const encrypters = recipients
+            .map((recipient) => {
+            if (options.enc === 'A256GCM') {
+                if (args.packing === 'authcrypt' && (!options.alg || options.alg?.startsWith('ECDH-1PU'))) {
+                    if (options.alg?.endsWith('+XC20PKW')) {
+                        // FIXME: the didcomm spec actually links to ECDH-1PU(v4)
+                        return (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256gcmAuthEncrypterEcdh1PuV3x25519WithXC20PKW)(recipient.publicKeyBytes, senderECDH, {
+                            kid: recipient.kid,
+                        });
+                    }
+                    else if (options?.alg?.endsWith('+A256KW')) {
+                        // FIXME: the didcomm spec actually links to ECDH-1PU(v4)
+                        return (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256gcmAuthEncrypterEcdh1PuV3x25519WithA256KW)(recipient.publicKeyBytes, senderECDH, {
+                            kid: recipient.kid,
+                        });
+                    }
+                }
+                else if (args.packing === 'anoncrypt' && (!options.alg || options.alg?.startsWith('ECDH-ES'))) {
+                    if (options.alg?.endsWith('+XC20PKW')) {
+                        return (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256gcmAnonEncrypterX25519WithXC20PKW)(recipient.publicKeyBytes, recipient.kid);
+                    }
+                    else if (options?.alg?.endsWith('+A256KW')) {
+                        return (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256gcmAnonEncrypterX25519WithA256KW)(recipient.publicKeyBytes, recipient.kid);
+                    }
+                }
+            }
+            else if (options.enc === 'A256CBC-HS512') {
+                if (args.packing === 'authcrypt' && (!options.alg || options.alg?.startsWith('ECDH-1PU'))) {
+                    if (options.alg?.endsWith('+XC20PKW')) {
+                        // FIXME: the didcomm spec actually links to ECDH-1PU(v4)
+                        return (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256cbcHs512AuthEncrypterX25519WithXC20PKW)(recipient.publicKeyBytes, senderECDH, {
+                            kid: recipient.kid,
+                        });
+                    }
+                    else if (options?.alg?.endsWith('+A256KW')) {
+                        // FIXME: the didcomm spec actually links to ECDH-1PU(v4)
+                        return (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256cbcHs512AuthEncrypterX25519WithA256KW)(recipient.publicKeyBytes, senderECDH, {
+                            kid: recipient.kid,
+                        });
+                    }
+                }
+                else if (args.packing === 'anoncrypt' && (!options.alg || options.alg?.startsWith('ECDH-ES'))) {
+                    if (options.alg?.endsWith('+XC20PKW')) {
+                        return (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256cbcHs512AnonEncrypterX25519WithXC20PKW)(recipient.publicKeyBytes, recipient.kid);
+                    }
+                    else if (options?.alg?.endsWith('+A256KW')) {
+                        return (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256cbcHs512AnonEncrypterX25519WithA256KW)(recipient.publicKeyBytes, recipient.kid);
+                    }
+                }
+            }
+            else if (options.enc === 'XC20P') {
+                if (args.packing === 'authcrypt' && (!options.alg || options.alg?.startsWith('ECDH-1PU'))) {
+                    if (options.alg?.endsWith('+XC20PKW')) {
+                        // FIXME: the didcomm spec actually links to ECDH-1PU(v4)
+                        return (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.xc20pAuthEncrypterEcdh1PuV3x25519WithXC20PKW)(recipient.publicKeyBytes, senderECDH, { kid: recipient.kid });
+                    }
+                    else if (options?.alg?.endsWith('+A256KW')) {
+                        // FIXME: the didcomm spec actually links to ECDH-1PU(v4)
+                        return (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.xc20pAuthEncrypterEcdh1PuV3x25519WithA256KW)(recipient.publicKeyBytes, senderECDH, {
+                            kid: recipient.kid,
+                        });
+                    }
+                }
+                else if (args.packing === 'anoncrypt' && (!options.alg || options.alg?.startsWith('ECDH-ES'))) {
+                    if (options.alg?.endsWith('+XC20PKW')) {
+                        return (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.xc20pAnonEncrypterX25519WithXC20PKW)(recipient.publicKeyBytes, recipient.kid);
+                    }
+                    else if (options?.alg?.endsWith('+A256KW')) {
+                        return (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.xc20pAnonEncrypterX25519WithA256KW)(recipient.publicKeyBytes, recipient.kid);
+                    }
+                }
+            }
+            debug(`not_supported: could not create suitable ${args.packing} encrypter for recipient ${recipient.kid} with alg=${options.alg}, enc=${options.enc}`);
+            return null;
+        })
+            .filter(_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined);
+        if (encrypters.length === 0) {
+            throw new Error(`not_supported: could not create suitable ${args.packing} encrypter for recipient ${args?.message?.to} with alg=${options.alg}, enc=${options.enc}`);
+        }
+        // 4. createJWE
+        const messageBytes = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.stringToUtf8Bytes)(JSON.stringify(args.message));
+        const jwe = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.createJWE)(messageBytes, encrypters, protectedHeader, undefined, true);
+        const message = JSON.stringify(jwe);
+        return { message };
+    }
+    /** {@inheritdoc IDIDComm.getDIDCommMessageMediaType} */
+    async getDidCommMessageMediaType({ message }) {
+        try {
+            const { mediaType } = this.decodeMessageAndMediaType(message);
+            return mediaType;
+        }
+        catch (e) {
+            debug(`Could not parse message as DIDComm v2 message: ${e}`);
+            throw e;
+        }
+    }
+    /** {@inheritdoc IDIDComm.unpackDIDCommMessage} */
+    async unpackDIDCommMessage(args, context) {
+        const { msgObj, mediaType } = this.decodeMessageAndMediaType(args.message);
+        if (mediaType === _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.SIGNED) {
+            return this.unpackDIDCommMessageJWS(msgObj, context, args.resolutionOptions);
+        }
+        else if (mediaType === _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.PLAIN) {
+            return { message: msgObj, metaData: { packing: 'none' } };
+        }
+        else if (mediaType === _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.ENCRYPTED) {
+            return this.unpackDIDCommMessageJWE({ jwe: msgObj }, context, args.resolutionOptions);
+        }
+        else {
+            throw Error('not_supported: ' + mediaType);
+        }
+    }
+    async unpackDIDCommMessageJWS(jws, context, resolutionOptions) {
+        // TODO: currently only supporting one signature
+        const signatureEncoded = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(jws.signature)
+            ? jws.signature
+            : jws.signatures[0]?.signature;
+        const headerEncoded = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(jws.protected)
+            ? jws.protected
+            : jws.signatures[0]?.protected;
+        if (!(0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(headerEncoded) || !(0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(signatureEncoded)) {
+            throw new Error('invalid_argument: could not interpret message as JWS');
+        }
+        const message = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.decodeJoseBlob)(jws.payload);
+        const header = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.decodeJoseBlob)(headerEncoded);
+        const sender = (0,did_resolver__WEBPACK_IMPORTED_MODULE_9__.parse)(header.kid)?.did;
+        if (!(0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(sender) || sender !== message.from) {
+            throw new Error('invalid_jws: sender is not a DID or does not match the `kid`');
+        }
+        const senderDoc = await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.resolveDidOrThrow)(sender, context, resolutionOptions);
+        const senderKey = (await context.agent.getDIDComponentById({
+            didDocument: senderDoc,
+            didUrl: header.kid,
+            section: 'authentication',
+        }));
+        const verifiedSenderKey = (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.verifyJWS)(`${headerEncoded}.${jws.payload}.${signatureEncoded}`, senderKey);
+        if ((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined)(verifiedSenderKey)) {
+            return { message, metaData: { packing: 'jws' } };
+        }
+        else {
+            throw new Error('invalid_jws: sender `kid` could not be validated as the signer of the message');
+        }
+    }
+    async unpackDIDCommMessageJWE({ jwe }, context, resolutionOptions) {
+        // 0 resolve skid to DID doc
+        //   - find skid in DID doc and convert to 'X25519' byte array (if type matches)
+        let senderKeyBytes = await (0,_utils_js__WEBPACK_IMPORTED_MODULE_4__.extractSenderEncryptionKey)(jwe, context, resolutionOptions);
+        // 1. check whether kid is one of my DID URIs
+        //   - get recipient DID URIs
+        //   - extract DIDs from recipient DID URIs
+        //   - match DIDs against locally managed DIDs
+        let managedRecipients = await (0,_utils_js__WEBPACK_IMPORTED_MODULE_4__.extractManagedRecipients)(jwe, context);
+        // 1.5 distribute protected header to each recipient
+        const protectedHeader = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.decodeJoseBlob)(jwe.protected);
+        managedRecipients = managedRecipients.map((mr) => {
+            mr.recipient.header = { ...protectedHeader, ...mr.recipient.header };
+            return mr;
+        });
+        // 2. get internal IKey instance for each recipient.kid
+        //   - resolve locally managed DIDs that match recipients
+        //   - filter to the keyAgreementKeys that match the recipient.kid
+        //   - match identifier.keys.publicKeyHex to (verificationMethod.publicKey*)
+        //   - return a list of `IKey`
+        const localKeys = await (0,_utils_js__WEBPACK_IMPORTED_MODULE_4__.mapRecipientsToLocalKeys)(managedRecipients, context, resolutionOptions);
+        // 3. for each recipient
+        //  if isAuthcrypted? (if senderKey != null)
+        //   - construct auth decrypter
+        //  else
+        //   - construct anon decrypter
+        for (const localKey of localKeys) {
+            let packing = 'anoncrypt';
+            let decrypter = null;
+            const recipientECDH = (0,_utils_js__WEBPACK_IMPORTED_MODULE_4__.createEcdhWrapper)(localKey.localKeyRef, context);
+            // TODO: here's where more algorithms should be supported
+            if (localKey.recipient?.header?.epk?.crv === 'X25519') {
+                if (localKey.recipient?.header?.enc === 'A256GCM') {
+                    if (senderKeyBytes && localKey.recipient?.header?.alg?.includes('ECDH-1PU')) {
+                        packing = 'authcrypt';
+                        if (localKey.recipient?.header?.alg?.endsWith('+A256KW')) {
+                            decrypter = (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256gcmAuthDecrypterEcdh1PuV3x25519WithA256KW)(recipientECDH, senderKeyBytes);
+                        }
+                        else if (localKey.recipient?.header?.alg?.endsWith('+XC20PKW')) {
+                            decrypter = (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256gcmAuthDecrypterEcdh1PuV3x25519WithXC20PKW)(recipientECDH, senderKeyBytes);
+                        }
+                    }
+                    else {
+                        packing = 'anoncrypt';
+                        if (localKey.recipient?.header?.alg?.endsWith('+A256KW')) {
+                            decrypter = (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256gcmAnonDecrypterX25519WithA256KW)(recipientECDH);
+                        }
+                        else if (localKey.recipient?.header?.alg?.endsWith('+XC20PKW')) {
+                            decrypter = (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256gcmAnonDecrypterX25519WithXC20PKW)(recipientECDH);
+                        }
+                    }
+                }
+                else if (localKey.recipient?.header?.enc === 'A256CBC-HS512') {
+                    if (senderKeyBytes && localKey.recipient?.header?.alg?.includes('ECDH-1PU')) {
+                        packing = 'authcrypt';
+                        if (localKey.recipient?.header?.alg?.endsWith('+A256KW')) {
+                            decrypter = (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256cbcHs512AuthDecrypterX25519WithA256KW)(recipientECDH, senderKeyBytes);
+                        }
+                        else if (localKey.recipient?.header?.alg?.endsWith('+XC20PKW')) {
+                            decrypter = (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256cbcHs512AuthDecrypterX25519WithXC20PKW)(recipientECDH, senderKeyBytes);
+                        }
+                    }
+                    else {
+                        packing = 'anoncrypt';
+                        if (localKey.recipient?.header?.alg?.endsWith('+A256KW')) {
+                            decrypter = (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.a256cbcHs512AnonDecrypterX25519WithA256KW)(recipientECDH);
+                        }
+                        else if (localKey.recipient?.header?.alg?.endsWith('+XC20PKW')) {
+                            decrypter = (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.a256cbcHs512AnonDecrypterX25519WithXC20PKW)(recipientECDH);
+                        }
+                    }
+                }
+                else if (localKey.recipient?.header?.enc === 'XC20P') {
+                    if (senderKeyBytes && localKey.recipient?.header?.alg?.includes('ECDH-1PU')) {
+                        packing = 'authcrypt';
+                        if (localKey.recipient?.header?.alg?.endsWith('+A256KW')) {
+                            decrypter = (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.xc20pAuthDecrypterEcdh1PuV3x25519WithA256KW)(recipientECDH, senderKeyBytes);
+                        }
+                        else if (localKey.recipient?.header?.alg?.endsWith('+XC20PKW')) {
+                            decrypter = (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.xc20pAuthDecrypterEcdh1PuV3x25519WithXC20PKW)(recipientECDH, senderKeyBytes);
+                        }
+                    }
+                    else {
+                        packing = 'anoncrypt';
+                        if (localKey.recipient?.header?.alg?.endsWith('+A256KW')) {
+                            decrypter = (0,_encryption_a256kw_encrypters_js__WEBPACK_IMPORTED_MODULE_1__.xc20pAnonDecrypterX25519WithA256KW)(recipientECDH);
+                        }
+                        else if (localKey.recipient?.header?.alg?.endsWith('+XC20PKW')) {
+                            decrypter = (0,_encryption_xc20pkw_encrypters_js__WEBPACK_IMPORTED_MODULE_2__.xc20pAnonDecrypterX25519WithXC20PKW)(recipientECDH);
+                        }
+                    }
+                }
+            }
+            if (!decrypter) {
+                throw new Error('unable to decrypt DIDComm message with any of the locally managed keys');
+            }
+            // 4. decryptJWE(jwe, decrypter)
+            try {
+                const decryptedBytes = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.decryptJWE)(jwe, decrypter);
+                const decryptedMsg = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.bytesToUtf8String)(decryptedBytes);
+                const message = JSON.parse(decryptedMsg);
+                return { message, metaData: { packing } };
+            }
+            catch (e) {
+                debug(`unable to decrypt DIDComm msg using ${localKey.localKeyRef} (${localKey.recipient.header.kid})`);
+            }
+        }
+        throw new Error('unable to decrypt DIDComm message with any of the locally managed keys');
+    }
+    decodeMessageAndMediaType(message) {
+        let msgObj;
+        if (typeof message === 'string') {
+            try {
+                msgObj = JSON.parse(message);
+            }
+            catch (e) {
+                throw new Error('invalid_argument: unable to parse message as JSON');
+                // TODO: try to interpret as compact serialized JWS / JWM?
+            }
+        }
+        else {
+            msgObj = message;
+        }
+        let mediaType = null;
+        if (msgObj.typ === _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.PLAIN) {
+            mediaType = _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.PLAIN;
+        }
+        else if (msgObj.protected) {
+            const protectedHeader = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.decodeJoseBlob)(msgObj.protected);
+            if (protectedHeader.typ === _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.SIGNED) {
+                mediaType = _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.SIGNED;
+            }
+            else if (protectedHeader.typ === _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.ENCRYPTED) {
+                mediaType = _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.ENCRYPTED;
+            }
+            else {
+                throw new Error('invalid_argument: unable to determine message type');
+            }
+        }
+        else if (msgObj.signatures) {
+            mediaType = _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.SIGNED;
+        }
+        else {
+            throw new Error('invalid_argument: unable to determine message type');
+        }
+        return { msgObj, mediaType };
+    }
+    findPreferredDIDCommService(services) {
+        // FIXME: TODO: get preferred service endpoint according to configuration; now defaulting to first service
+        return services[0];
+    }
+    async wrapDIDCommForwardMessage(recipientDidUrl, messageId, packedMessageToForward, routingKey, context) {
+        const splitKey = routingKey.split('#');
+        const shouldUseSpecificKid = splitKey.length > 1;
+        const mediatorDidUrl = splitKey[0];
+        const msgJson = JSON.parse(packedMessageToForward.message);
+        // 1. Create forward message
+        const forwardMessage = {
+            id: (0,uuid__WEBPACK_IMPORTED_MODULE_10__["default"])(),
+            type: 'https://didcomm.org/routing/2.0/forward',
+            to: [mediatorDidUrl],
+            body: {
+                next: recipientDidUrl,
+            },
+            attachments: [
+                {
+                    media_type: msgJson?.typ ?? _types_message_types_js__WEBPACK_IMPORTED_MODULE_8__.DIDCommMessageMediaType.ENCRYPTED,
+                    data: {
+                        json: msgJson,
+                    },
+                },
+            ],
+        };
+        context.agent.emit('DIDCommV2Message-forwarded', {
+            messageId,
+            next: recipientDidUrl,
+            routingKey: routingKey,
+        });
+        // 2. Pack message for routingKey with anoncrypt
+        if (shouldUseSpecificKid) {
+            return this.packDIDCommMessageJWE({ message: forwardMessage, packing: 'anoncrypt', options: { recipientKids: [routingKey] } }, context);
+        }
+        else {
+            return this.packDIDCommMessageJWE({ message: forwardMessage, packing: 'anoncrypt' }, context);
+        }
+    }
+    /** {@inheritdoc IDIDComm.sendDIDCommMessage} */
+    async sendDIDCommMessage(args, context) {
+        const { packedMessage, returnTransportId, recipientDidUrl, messageId } = args;
+        if (returnTransportId) {
+            // FIXME: TODO: check if previous message was ok with reusing transport?
+            // if so, retrieve transport from transport manager
+            //transport = this.findDIDCommTransport(returnTransportId)
+            throw new Error(`not_supported: return routes not supported yet`);
+        }
+        const didDoc = await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.resolveDidOrThrow)(recipientDidUrl, context, args.resolutionOptions);
+        function processServiceObject(service) {
+            if (service.type === 'DIDCommMessaging') {
+                return service;
+            }
+            else if (service.t === 'dm') {
+                return {
+                    type: 'DIDCommMessaging',
+                    serviceEndpoint: service.s,
+                    accept: service.a,
+                    routingKeys: service.r,
+                    id: `#dm+` + (service.id ?? service.s),
+                };
+            }
+        }
+        // FIXME: only send the message if the service section either explicitly supports `didcomm/v2`, or no
+        // `accept` property is present.
+        const services = (didDoc.service || [])
+            ?.map((service) => {
+            if (Array.isArray(service)) {
+                // This is a workaround for some malformed DID documents that bundle multiple service entries into an array
+                return service.map((s) => {
+                    if (typeof s === 'object') {
+                        return processServiceObject(s);
+                    }
+                });
+            }
+            else {
+                return processServiceObject(service);
+            }
+        })
+            .flat()
+            .filter(_veramo_utils__WEBPACK_IMPORTED_MODULE_5__.isDefined);
+        if (!services || services.length === 0) {
+            throw new Error(`not_found: could not find DIDComm Messaging service in DID document for '${recipientDidUrl}'`);
+        }
+        // spray all endpoints and transports that match and gather results
+        // TODO: investigate if we should queue the requests and stop when the first transport succeeds
+        const results = [];
+        for (const service of services) {
+            // serviceEndpoint can be a string, a ServiceEndpoint object, or an array of strings or ServiceEndpoint objects
+            let routingKeys = [];
+            let serviceEndpointUrl = '';
+            if (typeof service.serviceEndpoint === 'string') {
+                serviceEndpointUrl = service.serviceEndpoint;
+            }
+            else if (service.serviceEndpoint.uri) {
+                serviceEndpointUrl = service.serviceEndpoint.uri;
+            }
+            else if (Array.isArray(service.serviceEndpoint) && service.serviceEndpoint.length > 0) {
+                if (typeof service.serviceEndpoint[0] === 'string') {
+                    serviceEndpointUrl = service.serviceEndpoint[0];
+                }
+                else if (service.serviceEndpoint[0].uri) {
+                    serviceEndpointUrl = service.serviceEndpoint[0].uri;
+                }
+            }
+            if (typeof service.serviceEndpoint !== 'string') {
+                if (Array.isArray(service.serviceEndpoint) &&
+                    service.serviceEndpoint.length > 0 &&
+                    service.serviceEndpoint[0].routingKeys) {
+                    routingKeys = service.serviceEndpoint[0].routingKeys;
+                }
+                else if (service.serviceEndpoint.routingKeys) {
+                    routingKeys = service.serviceEndpoint.routingKeys;
+                }
+            }
+            if (routingKeys.length > 0) {
+                // routingKeys found, wrap forward messages
+                let wrappedMessage = packedMessage;
+                for (let i = routingKeys.length - 1; i >= 0; i--) {
+                    const recipient = i >= routingKeys.length - 1 ? recipientDidUrl : routingKeys[i + 1].split('#')[0];
+                    wrappedMessage = await this.wrapDIDCommForwardMessage(recipient, messageId, wrappedMessage, routingKeys[i], context);
+                }
+                packedMessage.message = wrappedMessage.message;
+            }
+            const isServiceEndpointDid = serviceEndpointUrl.startsWith('did:');
+            if (isServiceEndpointDid) {
+                // Final wrapping and send to mediator DID
+                const recipient = routingKeys.length > 0 ? routingKeys[routingKeys.length - 1].split('#')[0] : recipientDidUrl;
+                const wrappedMessage = await this.wrapDIDCommForwardMessage(recipient, messageId, packedMessage, serviceEndpointUrl, context);
+                try {
+                    results.push(await this.sendDIDCommMessage({ packedMessage: wrappedMessage, recipientDidUrl: serviceEndpointUrl, messageId }, context));
+                }
+                catch (e) {
+                    debug(e);
+                    results.push(e);
+                }
+            }
+            const transports = this.transports.filter((t) => t.isServiceSupported(service) && (!returnTransportId || t.id === returnTransportId));
+            if (!transports || transports.length < 1) {
+                const err = new Error('not_found: no transport type found for service: ' + JSON.stringify(service));
+                debug(err);
+                results.push(err);
+            }
+            for (const transport of transports) {
+                let response;
+                try {
+                    response = await transport.send(service, packedMessage.message);
+                    if (response.error) {
+                        const err = new Error(`Error when sending DIDComm message through transport with id: '${transport.id}': ${response.error}`);
+                        debug(err);
+                        results.push(err);
+                    }
+                    else {
+                        results.push({
+                            transportId: transport.id,
+                            returnMessage: response.returnMessage
+                                ? {
+                                    id: '',
+                                    type: 'unprocessed',
+                                    raw: response.returnMessage,
+                                }
+                                : undefined,
+                        });
+                    }
+                }
+                catch (e) {
+                    const err = new Error(`Cannot send DIDComm message through transport with id: '${transport.id}': ${e}`);
+                    debug(err);
+                    results.push(err);
+                }
+            }
+        }
+        const successful = results.filter((r) => !(r instanceof Error));
+        if (successful.length > 0) {
+            context.agent.emit('DIDCommV2Message-sent', messageId);
+            for (const response of successful) {
+                if (response.returnMessage) {
+                    const returnMessage = await context.agent.handleMessage({
+                        raw: response.returnMessage.raw ?? '',
+                    });
+                    return { transportId: response.transportId, returnMessage };
+                }
+            }
+            return successful[0];
+        }
+        else {
+            const errors = results.filter((r) => r instanceof Error);
+            const err = new Error('Could not send DIDComm message using any of the attepmpted transports');
+            err.cause = new AggregateError(errors);
+            throw err;
+        }
+    }
+    /** {@inheritdoc IDIDComm.sendMessageDIDCommAlpha1} */
+    async sendMessageDIDCommAlpha1(args, context) {
+        const { data, url, headers, save = true } = args;
+        debug('Resolving didDoc');
+        const didDoc = (await context.agent.resolveDid({ didUrl: data.to })).didDocument;
+        let serviceEndpoint;
+        if (url) {
+            serviceEndpoint = url;
+        }
+        else {
+            const service = didDoc && didDoc.service && didDoc.service.find((item) => item.type == 'Messaging');
+            serviceEndpoint = service?.serviceEndpoint;
+        }
+        if (serviceEndpoint) {
+            try {
+                data.id = data.id || (0,uuid__WEBPACK_IMPORTED_MODULE_10__["default"])();
+                let postPayload = JSON.stringify(data);
+                try {
+                    const identifier = await context.agent.didManagerGet({ did: data.from });
+                    const key = identifier.keys.find((k) => k.type === 'Ed25519');
+                    if (!key)
+                        throw Error('No encryption key');
+                    const publicKey = didDoc?.publicKey?.find((item) => item.type == 'Ed25519VerificationKey2018');
+                    if (!publicKey?.publicKeyHex)
+                        throw Error('Recipient does not have encryption publicKey');
+                    postPayload = await context.agent.keyManagerEncryptJWE({
+                        kid: key.kid,
+                        to: {
+                            type: 'Ed25519',
+                            publicKeyHex: publicKey?.publicKeyHex,
+                            kid: publicKey?.publicKeyHex,
+                        },
+                        data: postPayload,
+                    });
+                    debug('Encrypted:', postPayload);
+                }
+                catch (e) { }
+                debug('Sending to %s', serviceEndpoint);
+                const endpointUri = typeof serviceEndpoint === 'string'
+                    ? serviceEndpoint
+                    : serviceEndpoint.uri ?? '';
+                const res = await fetch(endpointUri, {
+                    method: 'POST',
+                    body: postPayload,
+                    headers,
+                });
+                debug('Status', res.status, res.statusText);
+                if (res.status == 200) {
+                    return await context.agent.handleMessage({
+                        raw: JSON.stringify(data),
+                        metaData: [{ type: 'DIDComm-sent' }],
+                        save,
+                    });
+                }
+                return Promise.reject(new Error('Message not sent'));
+            }
+            catch (e) {
+                return Promise.reject(e);
+            }
+        }
+        else {
+            debug('No Messaging service in didDoc');
+            return Promise.reject(new Error('No service endpoint'));
+        }
+    }
+}
+//# sourceMappingURL=didcomm.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/encryption/a256cbc-hs512-dir.js":
+/*!*****************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/encryption/a256cbc-hs512-dir.js ***!
+  \*****************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   a256cbcHs512DirDecrypter: () => (/* binding */ a256cbcHs512DirDecrypter),
+/* harmony export */   a256cbcHs512DirEncrypter: () => (/* binding */ a256cbcHs512DirEncrypter),
+/* harmony export */   timingSafeEqual: () => (/* binding */ timingSafeEqual)
+/* harmony export */ });
+/* harmony import */ var isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! isomorphic-webcrypto */ "./node_modules/isomorphic-webcrypto/src/browser.mjs");
+/* harmony import */ var _noble_hashes_utils__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! @noble/hashes/utils */ "./node_modules/@noble/hashes/esm/utils.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var uint8arrays_from_string__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! uint8arrays/from-string */ "./node_modules/uint8arrays/dist/src/from-string.js");
+
+
+
+
+const MAX_INT32 = 2 ** 32;
+function writeUInt32BE(buf, value, offset) {
+    if (value < 0 || value >= MAX_INT32) {
+        throw new RangeError(`value must be >= 0 and <= ${MAX_INT32 - 1}. Received ${value}`);
+    }
+    buf.set([value >>> 24, value >>> 16, value >>> 8, value & 0xff], offset);
+}
+function uint64be(value) {
+    const high = Math.floor(value / MAX_INT32);
+    const low = value % MAX_INT32;
+    const buf = new Uint8Array(8);
+    writeUInt32BE(buf, high, 0);
+    writeUInt32BE(buf, low, 4);
+    return buf;
+}
+/**
+ * Code copied and adapted from https://github.com/panva/jose
+ * @param enc - the JWE content encryption algorithm (e.g. A256CBC-HS512)
+ * @param plaintext - the content to encrypt
+ * @param cek - the raw content encryption key
+ * @param providedIV - optional provided Initialization Vector
+ * @param aad - optional additional authenticated data
+ */
+async function cbcEncrypt(enc = 'A256CBC-HS512', plaintext, cek, providedIV, aad = new Uint8Array(0)) {
+    // A256CBC-HS512 CEK size should be 512 bits; first 256 bits are used for HMAC with SHA-512 and the rest for AES-CBC
+    const keySize = parseInt(enc.slice(1, 4), 10);
+    const encKey = await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.importKey('raw', cek.subarray(keySize >> 3), 'AES-CBC', false, [
+        'encrypt',
+    ]);
+    const macKey = await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.importKey('raw', cek.subarray(0, keySize >> 3), {
+        hash: `SHA-${keySize << 1}`,
+        name: 'HMAC',
+    }, false, ['sign']);
+    if (providedIV && providedIV.length !== keySize >> 4) {
+        throw new Error(`illegal_argument: Invalid IV size, expected ${keySize >> 4}, got ${providedIV.length}`);
+    }
+    const iv = providedIV ?? (0,_noble_hashes_utils__WEBPACK_IMPORTED_MODULE_3__.randomBytes)(keySize >> 4);
+    const ciphertext = new Uint8Array(await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.encrypt({
+        iv,
+        name: 'AES-CBC',
+    }, encKey, plaintext));
+    const macData = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.concat)([aad, iv, ciphertext, uint64be(aad.length << 3)]);
+    const tag = new Uint8Array((await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.sign('HMAC', macKey, macData)).slice(0, keySize >> 3));
+    return { enc: 'dir', ciphertext, tag, iv };
+}
+function timingSafeEqual(a, b) {
+    if (a.length !== b.length) {
+        return false;
+    }
+    let result = 0;
+    let len = a.length;
+    for (let i = 0; i < len; i++) {
+        result |= a[i] ^ b[i];
+    }
+    return result === 0;
+}
+async function cbcDecrypt(enc = 'A256CBC-HS512', cek, ciphertext, iv, tag, aad) {
+    const keySize = parseInt(enc.slice(1, 4), 10);
+    const encKey = await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.importKey('raw', cek.subarray(keySize >> 3), 'AES-CBC', false, [
+        'decrypt',
+    ]);
+    const macKey = await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.importKey('raw', cek.subarray(0, keySize >> 3), {
+        hash: `SHA-${keySize << 1}`,
+        name: 'HMAC',
+    }, false, ['sign']);
+    const macData = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.concat)([aad, iv, ciphertext, uint64be(aad.length << 3)]);
+    const expectedTag = new Uint8Array((await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.sign('HMAC', macKey, macData)).slice(0, keySize >> 3));
+    let macCheckPassed;
+    try {
+        macCheckPassed = timingSafeEqual(tag, expectedTag);
+    }
+    catch {
+        //
+    }
+    if (!macCheckPassed) {
+        // current JWE decryption pipeline tries to decrypt multiple times with different keys, so return null instead of
+        // throwing an error
+        return null;
+        // throw new Error('jwe_decryption_failed: MAC check failed')
+    }
+    let plaintext = null;
+    try {
+        plaintext = new Uint8Array(await isomorphic_webcrypto__WEBPACK_IMPORTED_MODULE_0__["default"].subtle.decrypt({ iv, name: 'AES-CBC' }, encKey, ciphertext));
+    }
+    catch (e) {
+        // current JWE decryption pipeline tries to decrypt multiple times with different keys, so return null instead of
+        // throwing an error
+    }
+    return plaintext;
+}
+function a256cbcHs512DirDecrypter(key) {
+    // const cipher = new GCM(new AES(key))
+    async function decrypt(sealed, iv, aad) {
+        // did-jwt#decryptJWE combines the ciphertext and the tag into a single `sealed` array
+        const TAG_LENGTH = 32;
+        const ciphertext = sealed.subarray(0, sealed.length - TAG_LENGTH);
+        const tag = sealed.subarray(sealed.length - TAG_LENGTH);
+        return cbcDecrypt('A256CBC-HS512', key, ciphertext, iv, tag, aad ?? new Uint8Array(0));
+    }
+    return { alg: 'dir', enc: 'A256GCM', decrypt };
+}
+function a256cbcHs512DirEncrypter(cek) {
+    const enc = 'A256CBC-HS512';
+    const alg = 'dir';
+    async function encrypt(cleartext, protectedHeader = {}, aad) {
+        const protHeader = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.encodeBase64url)(JSON.stringify(Object.assign({ alg }, protectedHeader, { enc })));
+        const encodedAad = (0,uint8arrays_from_string__WEBPACK_IMPORTED_MODULE_2__.fromString)(aad ? `${protHeader}.${(0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.bytesToBase64url)(aad)}` : protHeader, 'utf-8');
+        const iv = protectedHeader.iv ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.base64ToBytes)(protectedHeader.iv) : undefined;
+        return {
+            ...(await cbcEncrypt('A256CBC-HS512', cleartext, cek, iv, encodedAad)),
+            protectedHeader: protHeader,
+        };
+    }
+    return { alg, enc, encrypt };
+}
+//# sourceMappingURL=a256cbc-hs512-dir.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/encryption/a256gcm-dir.js":
+/*!***********************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/encryption/a256gcm-dir.js ***!
+  \***********************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   a256gcmDirDecrypter: () => (/* binding */ a256gcmDirDecrypter),
+/* harmony export */   a256gcmDirEncrypter: () => (/* binding */ a256gcmDirEncrypter)
+/* harmony export */ });
+/* harmony import */ var _stablelib_aes__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @stablelib/aes */ "./node_modules/@stablelib/aes/lib/aes.js");
+/* harmony import */ var _stablelib_gcm__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @stablelib/gcm */ "./node_modules/@stablelib/gcm/lib/gcm.js");
+/* harmony import */ var _noble_hashes_utils__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! @noble/hashes/utils */ "./node_modules/@noble/hashes/esm/utils.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var uint8arrays_from_string__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! uint8arrays/from-string */ "./node_modules/uint8arrays/dist/src/from-string.js");
+
+
+
+
+
+function createA256GCMEncrypter(key) {
+    const blockcipher = new _stablelib_aes__WEBPACK_IMPORTED_MODULE_0__.AES(key);
+    const cipher = new _stablelib_gcm__WEBPACK_IMPORTED_MODULE_1__.GCM(blockcipher);
+    return (cleartext, aad) => {
+        const iv = (0,_noble_hashes_utils__WEBPACK_IMPORTED_MODULE_4__.randomBytes)(cipher.nonceLength);
+        const sealed = cipher.seal(iv, cleartext, aad);
+        return {
+            ciphertext: sealed.subarray(0, sealed.length - cipher.tagLength),
+            tag: sealed.subarray(sealed.length - cipher.tagLength),
+            iv,
+        };
+    };
+}
+function a256gcmDirEncrypter(key) {
+    const enc = 'A256GCM';
+    const alg = 'dir';
+    async function encrypt(cleartext, protectedHeader = {}, aad) {
+        const protHeader = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.encodeBase64url)(JSON.stringify(Object.assign({ alg }, protectedHeader, { enc })));
+        const encodedAad = (0,uint8arrays_from_string__WEBPACK_IMPORTED_MODULE_3__.fromString)(aad ? `${protHeader}.${(0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.bytesToBase64url)(aad)}` : protHeader, 'utf-8');
+        return {
+            ...createA256GCMEncrypter(key)(cleartext, encodedAad),
+            protectedHeader: protHeader,
+        };
+    }
+    return { alg, enc, encrypt };
+}
+function a256gcmDirDecrypter(key) {
+    const cipher = new _stablelib_gcm__WEBPACK_IMPORTED_MODULE_1__.GCM(new _stablelib_aes__WEBPACK_IMPORTED_MODULE_0__.AES(key));
+    async function decrypt(sealed, iv, aad) {
+        return cipher.open(iv, sealed, aad);
+    }
+    return { alg: 'dir', enc: 'A256GCM', decrypt };
+}
+//# sourceMappingURL=a256gcm-dir.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/encryption/a256kw-encrypters.js":
+/*!*****************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/encryption/a256kw-encrypters.js ***!
+  \*****************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   a256cbcHs512AnonDecrypterX25519WithA256KW: () => (/* binding */ a256cbcHs512AnonDecrypterX25519WithA256KW),
+/* harmony export */   a256cbcHs512AnonEncrypterX25519WithA256KW: () => (/* binding */ a256cbcHs512AnonEncrypterX25519WithA256KW),
+/* harmony export */   a256cbcHs512AuthDecrypterX25519WithA256KW: () => (/* binding */ a256cbcHs512AuthDecrypterX25519WithA256KW),
+/* harmony export */   a256cbcHs512AuthEncrypterX25519WithA256KW: () => (/* binding */ a256cbcHs512AuthEncrypterX25519WithA256KW),
+/* harmony export */   a256gcmAnonDecrypterX25519WithA256KW: () => (/* binding */ a256gcmAnonDecrypterX25519WithA256KW),
+/* harmony export */   a256gcmAnonEncrypterX25519WithA256KW: () => (/* binding */ a256gcmAnonEncrypterX25519WithA256KW),
+/* harmony export */   a256gcmAuthDecrypterEcdh1PuV3x25519WithA256KW: () => (/* binding */ a256gcmAuthDecrypterEcdh1PuV3x25519WithA256KW),
+/* harmony export */   a256gcmAuthEncrypterEcdh1PuV3x25519WithA256KW: () => (/* binding */ a256gcmAuthEncrypterEcdh1PuV3x25519WithA256KW),
+/* harmony export */   xc20pAnonDecrypterX25519WithA256KW: () => (/* binding */ xc20pAnonDecrypterX25519WithA256KW),
+/* harmony export */   xc20pAnonEncrypterX25519WithA256KW: () => (/* binding */ xc20pAnonEncrypterX25519WithA256KW),
+/* harmony export */   xc20pAuthDecrypterEcdh1PuV3x25519WithA256KW: () => (/* binding */ xc20pAuthDecrypterEcdh1PuV3x25519WithA256KW),
+/* harmony export */   xc20pAuthEncrypterEcdh1PuV3x25519WithA256KW: () => (/* binding */ xc20pAuthEncrypterEcdh1PuV3x25519WithA256KW)
+/* harmony export */ });
+/* harmony import */ var did_jwt__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! did-jwt */ "./node_modules/did-jwt/lib/index.module.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var _createEncrypter_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./createEncrypter.js */ "./node_modules/@veramo/did-comm/build/encryption/createEncrypter.js");
+/* harmony import */ var _a256kw_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./a256kw.js */ "./node_modules/@veramo/did-comm/build/encryption/a256kw.js");
+/* harmony import */ var _a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./a256gcm-dir.js */ "./node_modules/@veramo/did-comm/build/encryption/a256gcm-dir.js");
+/* harmony import */ var _a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ./a256cbc-hs512-dir.js */ "./node_modules/@veramo/did-comm/build/encryption/a256cbc-hs512-dir.js");
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// A256CBC-HS512
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function a256cbcHs512AnonEncrypterX25519WithA256KW(recipientPublicKey, kid, apv) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_2__.createFullEncrypter)(recipientPublicKey, undefined, { apv, kid }, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519EcdhEsKek, alg: 'ECDH-ES' }, _a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyWrapper, { from: (cek) => (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256cbcHs512DirEncrypter)(cek), enc: 'A256CBC-HS512' });
+}
+function a256cbcHs512AnonDecrypterX25519WithA256KW(receiverSecret) {
+    const alg = 'ECDH-ES+A256KW';
+    const enc = 'A256CBC-HS512';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519EcdhEsKek)(recipient, receiverSecret, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyUnwrapper)(kek);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.base64ToBytes)(recipient.encrypted_key));
+        if (cek === null)
+            return null;
+        return (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256cbcHs512DirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+function a256cbcHs512AuthEncrypterX25519WithA256KW(recipientPublicKey, senderSecret, options = {}) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_2__.createFullEncrypter)(recipientPublicKey, senderSecret, options, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519Ecdh1PUv3Kek, alg: 'ECDH-1PU' }, _a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyWrapper, { from: (cek) => (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256cbcHs512DirEncrypter)(cek), enc: 'A256CBC-HS512' });
+}
+function a256cbcHs512AuthDecrypterX25519WithA256KW(recipientSecret, senderPublicKey) {
+    const alg = 'ECDH-1PU+A256KW';
+    const enc = 'A256CBC-HS512';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519Ecdh1PUv3Kek)(recipient, recipientSecret, senderPublicKey, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyUnwrapper)(kek);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.base64ToBytes)(recipient.encrypted_key));
+        if (cek === null)
+            return null;
+        return (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256cbcHs512DirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// A256GCM
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function a256gcmAnonEncrypterX25519WithA256KW(recipientPublicKey, kid, apv) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_2__.createFullEncrypter)(recipientPublicKey, undefined, { apv, kid }, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519EcdhEsKek, alg: 'ECDH-ES' }, _a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyWrapper, { from: (cek) => (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256gcmDirEncrypter)(cek), enc: 'XC20P' });
+}
+function a256gcmAnonDecrypterX25519WithA256KW(receiverSecret) {
+    const alg = 'ECDH-ES+A256KW';
+    const enc = 'A256GCM';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519EcdhEsKek)(recipient, receiverSecret, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyUnwrapper)(kek);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.base64ToBytes)(recipient.encrypted_key));
+        if (cek === null)
+            return null;
+        return (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256gcmDirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+function a256gcmAuthEncrypterEcdh1PuV3x25519WithA256KW(recipientPublicKey, senderSecret, options = {}) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_2__.createFullEncrypter)(recipientPublicKey, senderSecret, options, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519Ecdh1PUv3Kek, alg: 'ECDH-1PU' }, _a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyWrapper, { from: (cek) => (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256gcmDirEncrypter)(cek), enc: 'A256GCM' });
+}
+function a256gcmAuthDecrypterEcdh1PuV3x25519WithA256KW(recipientSecret, senderPublicKey) {
+    const alg = 'ECDH-1PU+A256KW';
+    const enc = 'A256GCM';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519Ecdh1PUv3Kek)(recipient, recipientSecret, senderPublicKey, alg);
+        if (!kek)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyUnwrapper)(kek);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.base64ToBytes)(recipient.encrypted_key));
+        if (cek === null)
+            return null;
+        return (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256gcmDirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// XC20P
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function xc20pAnonEncrypterX25519WithA256KW(recipientPublicKey, kid, apv) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_2__.createFullEncrypter)(recipientPublicKey, undefined, { apv, kid }, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519EcdhEsKek, alg: 'ECDH-ES' }, _a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyWrapper, { from: (cek) => (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.xc20pDirEncrypter)(cek), enc: 'XC20P' });
+}
+function xc20pAnonDecrypterX25519WithA256KW(receiverSecret) {
+    const alg = 'ECDH-ES+A256KW';
+    const enc = 'XC20P';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519EcdhEsKek)(recipient, receiverSecret, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyUnwrapper)(kek);
+        // FIXME: why is there no tag and IV check here?
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.base64ToBytes)(recipient.encrypted_key));
+        if (cek === null)
+            return null;
+        return (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.xc20pDirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+function xc20pAuthEncrypterEcdh1PuV3x25519WithA256KW(recipientPublicKey, senderSecret, options = {}) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_2__.createFullEncrypter)(recipientPublicKey, senderSecret, options, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519Ecdh1PUv3Kek, alg: 'ECDH-1PU' }, _a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyWrapper, { from: (cek) => (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.xc20pDirEncrypter)(cek), enc: 'XC20P' });
+}
+function xc20pAuthDecrypterEcdh1PuV3x25519WithA256KW(recipientSecret, senderPublicKey) {
+    const alg = 'ECDH-1PU+A256KW';
+    const enc = 'XC20P';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519Ecdh1PUv3Kek)(recipient, recipientSecret, senderPublicKey, alg);
+        if (!kek)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_a256kw_js__WEBPACK_IMPORTED_MODULE_3__.a256KeyUnwrapper)(kek);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.base64ToBytes)(recipient.encrypted_key));
+        if (cek === null)
+            return null;
+        return (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.xc20pDirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+//# sourceMappingURL=a256kw-encrypters.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/encryption/a256kw.js":
+/*!******************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/encryption/a256kw.js ***!
+  \******************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   a256KeyUnwrapper: () => (/* binding */ a256KeyUnwrapper),
+/* harmony export */   a256KeyWrapper: () => (/* binding */ a256KeyWrapper)
+/* harmony export */ });
+/* harmony import */ var _stablelib_aes_kw__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @stablelib/aes-kw */ "./node_modules/@stablelib/aes-kw/lib/aes-kw.js");
+
+/**
+ * Creates a wrapper using AES-KW
+ * @param wrappingKey
+ */
+const a256KeyWrapper = {
+    from: (wrappingKey) => {
+        const wrap = async (cek) => {
+            return { ciphertext: new _stablelib_aes_kw__WEBPACK_IMPORTED_MODULE_0__.AESKW(wrappingKey).wrapKey(cek) };
+        };
+        return { wrap };
+    },
+    alg: 'A256KW',
+};
+function a256KeyUnwrapper(wrappingKey) {
+    const unwrap = async (wrappedCek) => {
+        try {
+            return new _stablelib_aes_kw__WEBPACK_IMPORTED_MODULE_0__.AESKW(wrappingKey).unwrapKey(wrappedCek);
+        }
+        catch (e) {
+            return null;
+        }
+    };
+    return { unwrap, alg: 'A256KW' };
+}
+//# sourceMappingURL=a256kw.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/encryption/createEncrypter.js":
+/*!***************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/encryption/createEncrypter.js ***!
+  \***************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   createFullEncrypter: () => (/* binding */ createFullEncrypter)
+/* harmony export */ });
+/* harmony import */ var did_jwt__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! did-jwt */ "./node_modules/did-jwt/lib/index.module.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var _noble_hashes_utils__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! @noble/hashes/utils */ "./node_modules/@noble/hashes/esm/utils.js");
+
+
+
+/**
+ * Compute the length of the content encryption key based on the algorithm.
+ * Only considering the algorithms known to did-comm.
+ * @param enc
+ */
+const cekLength = (enc) => {
+    switch (enc) {
+        case 'A256CBC-HS512':
+            return 512;
+        case 'A256GCM':
+        case 'XC20P':
+            return 256;
+        default:
+            return 256;
+    }
+};
+// duplicate of the method from did-jwt, where the Content Encryption key length is assumed to be 256 bits
+function createFullEncrypter(recipientPublicKey, senderSecret, options = {}, kekCreator, keyWrapper, contentEncrypter) {
+    async function encryptCek(cek, ephemeralKeyPair) {
+        const { epk, kek } = await kekCreator.createKek(recipientPublicKey, senderSecret, `${kekCreator.alg}+${keyWrapper.alg}`, options.apu, options.apv, ephemeralKeyPair);
+        const res = await keyWrapper.from(kek).wrap(cek);
+        const recipient = {
+            encrypted_key: (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.bytesToBase64url)(res.ciphertext),
+            header: {},
+        };
+        if (res.iv)
+            recipient.header.iv = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.bytesToBase64url)(res.iv);
+        if (res.tag)
+            recipient.header.tag = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.bytesToBase64url)(res.tag);
+        if (options.kid)
+            recipient.header.kid = options.kid;
+        if (options.apu)
+            recipient.header.apu = options.apu;
+        if (options.apv)
+            recipient.header.apv = options.apv;
+        if (!ephemeralKeyPair) {
+            recipient.header.alg = `${kekCreator.alg}+${keyWrapper.alg}`;
+            recipient.header.epk = epk;
+        }
+        return recipient;
+    }
+    async function encrypt(cleartext, protectedHeader = {}, aad, ephemeralKeyPair) {
+        // we won't want alg to be set to dir from xc20pDirEncrypter
+        Object.assign(protectedHeader, { alg: undefined });
+        // Content Encryption Key
+        const cek = (0,_noble_hashes_utils__WEBPACK_IMPORTED_MODULE_2__.randomBytes)(cekLength(contentEncrypter.enc) >> 3);
+        const recipient = await encryptCek(cek, ephemeralKeyPair);
+        // getting an ephemeral key means the epk is set only once per all recipients
+        if (ephemeralKeyPair) {
+            protectedHeader.alg = `${kekCreator.alg}+${keyWrapper.alg}`;
+            protectedHeader.epk = ephemeralKeyPair.publicKeyJWK;
+        }
+        return {
+            ...(await contentEncrypter.from(cek).encrypt(cleartext, protectedHeader, aad)),
+            recipient,
+            cek,
+        };
+    }
+    return {
+        alg: keyWrapper.alg,
+        enc: contentEncrypter.enc,
+        encrypt,
+        encryptCek,
+        genEpk: did_jwt__WEBPACK_IMPORTED_MODULE_0__.genX25519EphemeralKeyPair,
+    };
+}
+//# sourceMappingURL=createEncrypter.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/encryption/xc20pkw-encrypters.js":
+/*!******************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/encryption/xc20pkw-encrypters.js ***!
+  \******************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   a256cbcHs512AnonDecrypterX25519WithXC20PKW: () => (/* binding */ a256cbcHs512AnonDecrypterX25519WithXC20PKW),
+/* harmony export */   a256cbcHs512AnonEncrypterX25519WithXC20PKW: () => (/* binding */ a256cbcHs512AnonEncrypterX25519WithXC20PKW),
+/* harmony export */   a256cbcHs512AuthDecrypterX25519WithXC20PKW: () => (/* binding */ a256cbcHs512AuthDecrypterX25519WithXC20PKW),
+/* harmony export */   a256cbcHs512AuthEncrypterX25519WithXC20PKW: () => (/* binding */ a256cbcHs512AuthEncrypterX25519WithXC20PKW),
+/* harmony export */   a256gcmAnonDecrypterX25519WithXC20PKW: () => (/* binding */ a256gcmAnonDecrypterX25519WithXC20PKW),
+/* harmony export */   a256gcmAnonEncrypterX25519WithXC20PKW: () => (/* binding */ a256gcmAnonEncrypterX25519WithXC20PKW),
+/* harmony export */   a256gcmAuthDecrypterEcdh1PuV3x25519WithXC20PKW: () => (/* binding */ a256gcmAuthDecrypterEcdh1PuV3x25519WithXC20PKW),
+/* harmony export */   a256gcmAuthEncrypterEcdh1PuV3x25519WithXC20PKW: () => (/* binding */ a256gcmAuthEncrypterEcdh1PuV3x25519WithXC20PKW),
+/* harmony export */   xc20pAnonDecrypterX25519WithXC20PKW: () => (/* binding */ xc20pAnonDecrypterX25519WithXC20PKW),
+/* harmony export */   xc20pAnonEncrypterX25519WithXC20PKW: () => (/* binding */ xc20pAnonEncrypterX25519WithXC20PKW),
+/* harmony export */   xc20pAuthDecrypterEcdh1PuV3x25519WithXC20PKW: () => (/* binding */ xc20pAuthDecrypterEcdh1PuV3x25519WithXC20PKW),
+/* harmony export */   xc20pAuthEncrypterEcdh1PuV3x25519WithXC20PKW: () => (/* binding */ xc20pAuthEncrypterEcdh1PuV3x25519WithXC20PKW)
+/* harmony export */ });
+/* harmony import */ var did_jwt__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! did-jwt */ "./node_modules/did-jwt/lib/index.module.js");
+/* harmony import */ var _createEncrypter_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./createEncrypter.js */ "./node_modules/@veramo/did-comm/build/encryption/createEncrypter.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var _xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./xc20pkw.js */ "./node_modules/@veramo/did-comm/build/encryption/xc20pkw.js");
+/* harmony import */ var _a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./a256cbc-hs512-dir.js */ "./node_modules/@veramo/did-comm/build/encryption/a256cbc-hs512-dir.js");
+/* harmony import */ var _a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ./a256gcm-dir.js */ "./node_modules/@veramo/did-comm/build/encryption/a256gcm-dir.js");
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// A256CBC-HS512
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function a256cbcHs512AnonEncrypterX25519WithXC20PKW(recipientPublicKey, kid, apv) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_1__.createFullEncrypter)(recipientPublicKey, undefined, { apv, kid }, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519EcdhEsKek, alg: 'ECDH-ES' }, _xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyWrapper, { from: (cek) => (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256cbcHs512DirEncrypter)(cek), enc: 'A256CBC-HS512' });
+}
+function a256cbcHs512AnonDecrypterX25519WithXC20PKW(receiverSecret) {
+    const alg = 'ECDH-ES+XC20PKW';
+    const enc = 'A256CBC-HS512';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519EcdhEsKek)(recipient, receiverSecret, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyUnwrapper)(kek);
+        const recipientIV = recipient?.header?.iv ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.iv) : new Uint8Array(0);
+        const recipientTag = recipient?.header?.tag ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.tag) : new Uint8Array(0);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.encrypted_key), recipientIV, recipientTag);
+        if (cek === null)
+            return null;
+        return (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256cbcHs512DirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+function a256cbcHs512AuthEncrypterX25519WithXC20PKW(recipientPublicKey, senderSecret, options = {}) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_1__.createFullEncrypter)(recipientPublicKey, senderSecret, options, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519Ecdh1PUv3Kek, alg: 'ECDH-1PU' }, _xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyWrapper, { from: (cek) => (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256cbcHs512DirEncrypter)(cek), enc: 'A256CBC-HS512' });
+}
+function a256cbcHs512AuthDecrypterX25519WithXC20PKW(recipientSecret, senderPublicKey) {
+    const alg = 'ECDH-1PU+XC20PKW';
+    const enc = 'A256CBC-HS512';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519Ecdh1PUv3Kek)(recipient, recipientSecret, senderPublicKey, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyUnwrapper)(kek);
+        const recipientIV = recipient?.header?.iv ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.iv) : new Uint8Array(0);
+        const recipientTag = recipient?.header?.tag ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.tag) : new Uint8Array(0);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.encrypted_key), recipientIV, recipientTag);
+        if (cek === null)
+            return null;
+        return (0,_a256cbc_hs512_dir_js__WEBPACK_IMPORTED_MODULE_4__.a256cbcHs512DirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// A256GCM
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function a256gcmAnonEncrypterX25519WithXC20PKW(recipientPublicKey, kid, apv) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_1__.createFullEncrypter)(recipientPublicKey, undefined, { apv, kid }, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519EcdhEsKek, alg: 'ECDH-ES' }, _xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyWrapper, { from: (cek) => (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256gcmDirEncrypter)(cek), enc: 'XC20P' });
+}
+function a256gcmAnonDecrypterX25519WithXC20PKW(receiverSecret) {
+    const alg = 'ECDH-ES+XC20PKW';
+    const enc = 'A256GCM';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519EcdhEsKek)(recipient, receiverSecret, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyUnwrapper)(kek);
+        const recipientIV = recipient?.header?.iv ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.iv) : new Uint8Array(0);
+        const recipientTag = recipient?.header?.tag ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.tag) : new Uint8Array(0);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.encrypted_key), recipientIV, recipientTag);
+        if (cek === null)
+            return null;
+        return (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256gcmDirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+function a256gcmAuthEncrypterEcdh1PuV3x25519WithXC20PKW(recipientPublicKey, senderSecret, options = {}) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_1__.createFullEncrypter)(recipientPublicKey, senderSecret, options, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519Ecdh1PUv3Kek, alg: 'ECDH-1PU' }, _xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyWrapper, { from: (cek) => (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256gcmDirEncrypter)(cek), enc: 'A256GCM' });
+}
+function a256gcmAuthDecrypterEcdh1PuV3x25519WithXC20PKW(recipientSecret, senderPublicKey) {
+    const alg = 'ECDH-1PU+XC20PKW';
+    const enc = 'A256GCM';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519Ecdh1PUv3Kek)(recipient, recipientSecret, senderPublicKey, alg);
+        if (!kek)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyUnwrapper)(kek);
+        const recipientIV = recipient?.header?.iv ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.iv) : new Uint8Array(0);
+        const recipientTag = recipient?.header?.tag ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.tag) : new Uint8Array(0);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.encrypted_key), recipientIV, recipientTag);
+        if (cek === null)
+            return null;
+        return (0,_a256gcm_dir_js__WEBPACK_IMPORTED_MODULE_5__.a256gcmDirDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// XC20P
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function xc20pAnonEncrypterX25519WithXC20PKW(recipientPublicKey, kid, apv) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_1__.createFullEncrypter)(recipientPublicKey, undefined, { apv, kid }, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519EcdhEsKek, alg: 'ECDH-ES' }, _xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyWrapper, { from: (cek) => (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.xc20pDirEncrypter)(cek), enc: 'XC20P' });
+}
+function xc20pAnonDecrypterX25519WithXC20PKW(receiverSecret) {
+    const alg = 'ECDH-ES+XC20PKW';
+    const enc = 'XC20P';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519EcdhEsKek)(recipient, receiverSecret, alg);
+        if (kek === null)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyUnwrapper)(kek);
+        const recipientIV = recipient?.header?.iv ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.iv) : new Uint8Array(0);
+        const recipientTag = recipient?.header?.tag ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.tag) : new Uint8Array(0);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.encrypted_key), recipientIV, recipientTag);
+        if (cek === null)
+            return null;
+        return (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+function xc20pAuthEncrypterEcdh1PuV3x25519WithXC20PKW(recipientPublicKey, senderSecret, options = {}) {
+    return (0,_createEncrypter_js__WEBPACK_IMPORTED_MODULE_1__.createFullEncrypter)(recipientPublicKey, senderSecret, options, { createKek: did_jwt__WEBPACK_IMPORTED_MODULE_0__.createX25519Ecdh1PUv3Kek, alg: 'ECDH-1PU' }, _xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyWrapper, { from: (cek) => (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.xc20pDirEncrypter)(cek), enc: 'XC20P' });
+}
+function xc20pAuthDecrypterEcdh1PuV3x25519WithXC20PKW(recipientSecret, senderPublicKey) {
+    const alg = 'ECDH-1PU+XC20PKW';
+    const enc = 'XC20P';
+    async function decrypt(sealed, iv, aad, recipient) {
+        recipient = recipient;
+        const kek = await (0,did_jwt__WEBPACK_IMPORTED_MODULE_0__.computeX25519Ecdh1PUv3Kek)(recipient, recipientSecret, senderPublicKey, alg);
+        if (!kek)
+            return null;
+        // Content Encryption Key
+        const unwrapper = (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pKeyUnwrapper)(kek);
+        const recipientIV = recipient?.header?.iv ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.iv) : new Uint8Array(0);
+        const recipientTag = recipient?.header?.tag ? (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.header.tag) : new Uint8Array(0);
+        const cek = await unwrapper.unwrap((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.base64ToBytes)(recipient.encrypted_key), recipientIV, recipientTag);
+        if (cek === null)
+            return null;
+        return (0,_xc20pkw_js__WEBPACK_IMPORTED_MODULE_3__.xc20pDecrypter)(cek).decrypt(sealed, iv, aad);
+    }
+    return { alg, enc, decrypt };
+}
+//# sourceMappingURL=xc20pkw-encrypters.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/encryption/xc20pkw.js":
+/*!*******************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/encryption/xc20pkw.js ***!
+  \*******************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   xc20pDecrypter: () => (/* binding */ xc20pDecrypter),
+/* harmony export */   xc20pKeyUnwrapper: () => (/* binding */ xc20pKeyUnwrapper),
+/* harmony export */   xc20pKeyWrapper: () => (/* binding */ xc20pKeyWrapper)
+/* harmony export */ });
+/* harmony import */ var _noble_hashes_utils__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! @noble/hashes/utils */ "./node_modules/@noble/hashes/esm/utils.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var _stablelib_xchacha20poly1305__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @stablelib/xchacha20poly1305 */ "./node_modules/@stablelib/xchacha20poly1305/lib/xchacha20poly1305.js");
+
+
+
+const xc20pKeyWrapper = {
+    from: (wrappingKey) => {
+        const cipher = new _stablelib_xchacha20poly1305__WEBPACK_IMPORTED_MODULE_1__.XChaCha20Poly1305(wrappingKey);
+        const wrap = async (cek) => {
+            const iv = (0,_noble_hashes_utils__WEBPACK_IMPORTED_MODULE_2__.randomBytes)(cipher.nonceLength);
+            const sealed = cipher.seal(iv, cek);
+            return {
+                ciphertext: sealed.subarray(0, sealed.length - cipher.tagLength),
+                tag: sealed.subarray(sealed.length - cipher.tagLength),
+                iv,
+            };
+        };
+        return { wrap };
+    },
+    alg: 'XC20PKW',
+};
+function xc20pDecrypter(key) {
+    const cipher = new _stablelib_xchacha20poly1305__WEBPACK_IMPORTED_MODULE_1__.XChaCha20Poly1305(key);
+    async function decrypt(sealed, iv, aad) {
+        return cipher.open(iv, sealed, aad);
+    }
+    return { alg: 'dir', enc: 'XC20P', decrypt };
+}
+function xc20pKeyUnwrapper(wrappingKey) {
+    const unwrap = async (wrappedCek, iv, tag) => {
+        try {
+            const sealed = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_0__.concat)([wrappedCek, tag]);
+            return xc20pDecrypter(wrappingKey).decrypt(sealed, iv);
+        }
+        catch (e) {
+            return null;
+        }
+    };
+    return { unwrap, alg: 'XC20PKW' };
+}
+//# sourceMappingURL=xc20pkw.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/index.js":
+/*!******************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/index.js ***!
+  \******************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   AbstractDIDCommTransport: () => (/* reexport safe */ _transports_transports_js__WEBPACK_IMPORTED_MODULE_6__.AbstractDIDCommTransport),
+/* harmony export */   CoordinateMediation: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.CoordinateMediation),
+/* harmony export */   CoordinateMediationMediatorMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.CoordinateMediationMediatorMessageHandler),
+/* harmony export */   CoordinateMediationRecipientMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.CoordinateMediationRecipientMessageHandler),
+/* harmony export */   CoordinateMediationV3MediatorMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.CoordinateMediationV3MediatorMessageHandler),
+/* harmony export */   CoordinateMediationV3RecipientMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.CoordinateMediationV3RecipientMessageHandler),
+/* harmony export */   DELIVERY_REQUEST_MESSAGE_TYPE: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.DELIVERY_REQUEST_MESSAGE_TYPE),
+/* harmony export */   DIDComm: () => (/* reexport safe */ _didcomm_js__WEBPACK_IMPORTED_MODULE_0__.DIDComm),
+/* harmony export */   DIDCommHttpTransport: () => (/* reexport safe */ _transports_transports_js__WEBPACK_IMPORTED_MODULE_6__.DIDCommHttpTransport),
+/* harmony export */   DIDCommMessageHandler: () => (/* reexport safe */ _message_handler_js__WEBPACK_IMPORTED_MODULE_4__.DIDCommMessageHandler),
+/* harmony export */   DIDCommMessageMediaType: () => (/* reexport safe */ _types_message_types_js__WEBPACK_IMPORTED_MODULE_1__.DIDCommMessageMediaType),
+/* harmony export */   MEDIATE_DENY_MESSAGE_TYPE: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.MEDIATE_DENY_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_GRANT_MESSAGE_TYPE: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.MEDIATE_GRANT_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_REQUEST_MESSAGE_TYPE: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.MEDIATE_REQUEST_MESSAGE_TYPE),
+/* harmony export */   MessagePickup: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.MessagePickup),
+/* harmony export */   PickupMediatorMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.PickupMediatorMessageHandler),
+/* harmony export */   PickupRecipientMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.PickupRecipientMessageHandler),
+/* harmony export */   RecipientUpdateResult: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.RecipientUpdateResult),
+/* harmony export */   RoutingMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.RoutingMessageHandler),
+/* harmony export */   STATUS_REQUEST_MESSAGE_TYPE: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.STATUS_REQUEST_MESSAGE_TYPE),
+/* harmony export */   TrustPingMessageHandler: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.TrustPingMessageHandler),
+/* harmony export */   UpdateAction: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.UpdateAction),
+/* harmony export */   createDeliveryRequestMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createDeliveryRequestMessage),
+/* harmony export */   createMediateGrantMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createMediateGrantMessage),
+/* harmony export */   createMediateRequestMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createMediateRequestMessage),
+/* harmony export */   createStatusRequestMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createStatusRequestMessage),
+/* harmony export */   createV3DeliveryRequestMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3DeliveryRequestMessage),
+/* harmony export */   createV3MediateDenyMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3MediateDenyMessage),
+/* harmony export */   createV3MediateGrantMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3MediateGrantMessage),
+/* harmony export */   createV3MediateRequestMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3MediateRequestMessage),
+/* harmony export */   createV3RecipientQueryMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3RecipientQueryMessage),
+/* harmony export */   createV3RecipientQueryResponseMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3RecipientQueryResponseMessage),
+/* harmony export */   createV3RecipientUpdateMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3RecipientUpdateMessage),
+/* harmony export */   createV3RecipientUpdateResponseMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3RecipientUpdateResponseMessage),
+/* harmony export */   createV3StatusRequestMessage: () => (/* reexport safe */ _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__.createV3StatusRequestMessage),
+/* harmony export */   schema: () => (/* reexport safe */ _plugin_schema_js__WEBPACK_IMPORTED_MODULE_7__.schema)
+/* harmony export */ });
+/* harmony import */ var _didcomm_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./didcomm.js */ "./node_modules/@veramo/did-comm/build/didcomm.js");
+/* harmony import */ var _types_message_types_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./types/message-types.js */ "./node_modules/@veramo/did-comm/build/types/message-types.js");
+/* harmony import */ var _types_utility_types_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./types/utility-types.js */ "./node_modules/@veramo/did-comm/build/types/utility-types.js");
+/* harmony import */ var _types_IDIDComm_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./types/IDIDComm.js */ "./node_modules/@veramo/did-comm/build/types/IDIDComm.js");
+/* harmony import */ var _message_handler_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./message-handler.js */ "./node_modules/@veramo/did-comm/build/message-handler.js");
+/* harmony import */ var _protocols_index_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ./protocols/index.js */ "./node_modules/@veramo/did-comm/build/protocols/index.js");
+/* harmony import */ var _transports_transports_js__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ./transports/transports.js */ "./node_modules/@veramo/did-comm/build/transports/transports.js");
+/* harmony import */ var _plugin_schema_js__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./plugin.schema.js */ "./node_modules/@veramo/did-comm/build/plugin.schema.js");
+/**
+ * Provides a {@link @veramo/did-comm#DIDComm | plugin} for the {@link @veramo/core#Agent} that implements
+ * {@link @veramo/did-comm#IDIDComm} interface.  Provides a {@link @veramo/did-comm#DIDCommMessageHandler | plugin}
+ * for the {@link @veramo/message-handler#MessageHandler} that decrypts messages.
+ *
+ * @packageDocumentation
+ */
+
+
+
+
+
+
+
+
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/message-handler.js":
+/*!****************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/message-handler.js ***!
+  \****************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   DIDCommMessageHandler: () => (/* binding */ DIDCommMessageHandler)
+/* harmony export */ });
+/* harmony import */ var _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/message-handler */ "./node_modules/@veramo/message-handler/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_1__('veramo:did-comm:message-handler');
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that decrypts DIDComm messages.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class DIDCommMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    async handleDIDCommAlpha(message, context) {
+        if (message.raw) {
+            try {
+                const parsed = JSON.parse(message.raw);
+                if (parsed.ciphertext && parsed.protected) {
+                    const identifiers = await context.agent.didManagerFind();
+                    for (const identifier of identifiers) {
+                        let decrypted;
+                        try {
+                            const key = identifier.keys.find((k) => k.type === 'Ed25519');
+                            if (!key)
+                                throw Error('No encryption keys');
+                            decrypted = await context.agent.keyManagerDecryptJWE({ kid: key.kid, data: message.raw });
+                        }
+                        catch (e) { }
+                        if (decrypted) {
+                            debug('Decrypted for %s', identifier.did);
+                            debug('Message:', decrypted);
+                            try {
+                                const json = JSON.parse(decrypted);
+                                if (json['type'] === 'jwt') {
+                                    message.raw = json.body;
+                                    message.addMetaData({ type: 'DIDComm' });
+                                }
+                                else {
+                                    if (json['id'])
+                                        message.id = json['id'];
+                                    if (json['type'])
+                                        message.type = json['type'];
+                                    message.raw = decrypted;
+                                    message.data = json;
+                                    message.addMetaData({ type: 'DIDComm' });
+                                }
+                                return super.handle(message, context);
+                            }
+                            catch (e) {
+                                debug(e.message);
+                            }
+                            message.raw = decrypted;
+                            message.addMetaData({ type: 'DIDComm' });
+                            return super.handle(message, context);
+                        }
+                    }
+                }
+                else if (parsed.type === 'jwt') {
+                    message.raw = parsed.body;
+                    if (parsed['id'])
+                        message.id = parsed['id'];
+                    message.addMetaData({ type: 'DIDComm' });
+                    return super.handle(message, context);
+                }
+                else {
+                    message.data = parsed.body;
+                    if (parsed['id'])
+                        message.id = parsed['id'];
+                    if (parsed['type'])
+                        message.type = parsed['type'];
+                    message.addMetaData({ type: 'DIDComm' });
+                    debug('JSON message with id and type', message);
+                    return super.handle(message, context);
+                }
+            }
+            catch (e) {
+                debug('Raw message is not a JSON string');
+            }
+        }
+        return super.handle(message, context);
+    }
+    /**
+     * Handles a new packed DIDCommV2 Message (also Alpha support but soon deprecated).
+     * - Tests whether raw message is a DIDCommV2 message
+     * - Unpacks raw message (JWM/JWE/JWS, or plain JSON).
+     * -
+     */
+    async handle(message, context) {
+        const rawMessage = message.raw;
+        if (rawMessage) {
+            // check whether message is DIDCommV2
+            let didCommMessageType = undefined;
+            try {
+                didCommMessageType = await context.agent.getDIDCommMessageMediaType({ message: rawMessage });
+            }
+            catch (e) {
+                debug(`Could not parse message as DIDComm v2: ${e}`);
+            }
+            if (didCommMessageType) {
+                try {
+                    const unpackedMessage = await context.agent.unpackDIDCommMessage({
+                        message: rawMessage,
+                    });
+                    const { type, to, from, id, thid: threadId, created_time: createdAt, expires_time: expiresAt, body: data, attachments, return_route } = unpackedMessage.message;
+                    message.type = type;
+                    message.to = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_2__.asArray)(to)[0];
+                    message.from = from;
+                    message.id = id;
+                    message.threadId = threadId;
+                    message.createdAt = createdAt;
+                    message.expiresAt = expiresAt;
+                    message.data = data;
+                    message.attachments = attachments;
+                    message.returnRoute = return_route;
+                    message.addMetaData({ type: 'didCommMetaData', value: JSON.stringify(unpackedMessage.metaData) });
+                    context.agent.emit('DIDCommV2Message-received', unpackedMessage);
+                    // DIDCommMessageHandler should attempt to forward message to next handler, but
+                    // shouldn't throw an error if other handlers fail
+                    let superHandled;
+                    try {
+                        superHandled = await super.handle(message, context);
+                    }
+                    catch (e) {
+                        debug(`Could not handle DIDCommV2Message in downstream handlers: ${e}`);
+                    }
+                    // if downstream message handlers failed, still treat original unpacked DIDCommV2Message as good
+                    return superHandled || message;
+                }
+                catch (e) {
+                    debug(`Could not unpack message as DIDCommV2Message: ${e}`);
+                }
+            }
+        }
+        return this.handleDIDCommAlpha(message, context);
+    }
+}
+//# sourceMappingURL=message-handler.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/plugin.schema.js":
+/*!**************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/plugin.schema.js ***!
+  \**************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   schema: () => (/* binding */ schema)
+/* harmony export */ });
+const schema = {
+    "IDIDComm": {
+        "components": {
+            "schemas": {
+                "IPackedDIDCommMessage": {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "message"
+                    ],
+                    "description": "The result of packing a DIDComm v2 message. The message is always serialized as string."
+                },
+                "DIDCommMessageMediaType": {
+                    "type": "string",
+                    "enum": [
+                        "application/didcomm-plain+json",
+                        "application/didcomm-signed+json",
+                        "application/didcomm-encrypted+json"
+                    ],
+                    "description": "Represents different DIDComm v2 message encapsulation."
+                },
+                "IPackDIDCommMessageArgs": {
+                    "type": "object",
+                    "properties": {
+                        "resolutionOptions": {
+                            "type": "object",
+                            "properties": {
+                                "publicKeyFormat": {
+                                    "type": "string"
+                                },
+                                "accept": {
+                                    "type": "string"
+                                }
+                            },
+                            "description": "Options to be passed to the DID resolver."
+                        },
+                        "message": {
+                            "$ref": "#/components/schemas/IDIDCommMessage"
+                        },
+                        "packing": {
+                            "$ref": "#/components/schemas/DIDCommMessagePacking"
+                        },
+                        "keyRef": {
+                            "type": "string"
+                        },
+                        "options": {
+                            "$ref": "#/components/schemas/IDIDCommOptions"
+                        }
+                    },
+                    "required": [
+                        "message",
+                        "packing"
+                    ],
+                    "description": "The input to the  {@link  IDIDComm.packDIDCommMessage }  method. When `packing` is `authcrypt` or `jws`, a `keyRef` MUST be provided."
+                },
+                "IDIDCommMessage": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "type": "string"
+                        },
+                        "from": {
+                            "type": "string"
+                        },
+                        "to": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "thid": {
+                            "type": "string"
+                        },
+                        "pthid": {
+                            "type": "string"
+                        },
+                        "expires_time": {
+                            "type": "string"
+                        },
+                        "created_time": {
+                            "type": "string"
+                        },
+                        "next": {
+                            "type": "string"
+                        },
+                        "from_prior": {
+                            "type": "string"
+                        },
+                        "body": {},
+                        "attachments": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/IDIDCommMessageAttachment"
+                            }
+                        },
+                        "return_route": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "id",
+                        "type"
+                    ],
+                    "description": "The DIDComm message structure. See https://identity.foundation/didcomm-messaging/spec/#plaintext-message-structure"
+                },
+                "IDIDCommMessageAttachment": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string"
+                        },
+                        "description": {
+                            "type": "string"
+                        },
+                        "filename": {
+                            "type": "string"
+                        },
+                        "media_type": {
+                            "type": "string"
+                        },
+                        "format": {
+                            "type": "string"
+                        },
+                        "lastmod_time": {
+                            "type": "string"
+                        },
+                        "byte_count": {
+                            "type": "number"
+                        },
+                        "data": {
+                            "$ref": "#/components/schemas/IDIDCommMessageAttachmentData"
+                        }
+                    },
+                    "required": [
+                        "data"
+                    ],
+                    "description": "The DIDComm message structure for attachments. See https://identity.foundation/didcomm-messaging/spec/#attachments"
+                },
+                "IDIDCommMessageAttachmentData": {
+                    "type": "object",
+                    "properties": {
+                        "jws": {},
+                        "hash": {
+                            "type": "string"
+                        },
+                        "links": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "base64": {
+                            "type": "string"
+                        },
+                        "json": {}
+                    },
+                    "description": "The DIDComm message structure for data in an attachment. See https://identity.foundation/didcomm-messaging/spec/#attachments"
+                },
+                "DIDCommMessagePacking": {
+                    "type": "string",
+                    "enum": [
+                        "authcrypt",
+                        "anoncrypt",
+                        "jws",
+                        "none",
+                        "anoncrypt+authcrypt",
+                        "anoncrypt+jws"
+                    ],
+                    "description": "The possible types of message packing.\n\n`authcrypt`, `anoncrypt`, `anoncrypt+authcrypt`, and `anoncrypt+jws` will produce `DIDCommMessageMediaType.ENCRYPTED` messages.\n\n`jws` will produce `DIDCommMessageMediaType.SIGNED` messages.\n\n`none` will produce `DIDCommMessageMediaType.PLAIN` messages."
+                },
+                "IDIDCommOptions": {
+                    "type": "object",
+                    "properties": {
+                        "bcc": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Add extra recipients for the packed message."
+                        },
+                        "recipientKids": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Restrict to a set of kids for recipient"
+                        },
+                        "enc": {
+                            "type": "string",
+                            "enum": [
+                                "XC20P",
+                                "A256GCM",
+                                "A256CBC-HS512"
+                            ],
+                            "description": "Optional content encryption algorithm to use. Defaults to 'A256GCM'"
+                        },
+                        "alg": {
+                            "type": "string",
+                            "enum": [
+                                "ECDH-ES+A256KW",
+                                "ECDH-1PU+A256KW",
+                                "ECDH-ES+XC20PKW",
+                                "ECDH-1PU+XC20PKW"
+                            ],
+                            "description": "Optional key wrapping algorithm to use. Defaults to 'ECDH-ES+A256KW'"
+                        }
+                    },
+                    "description": "Extra options when packing a DIDComm message."
+                },
+                "ISendDIDCommMessageArgs": {
+                    "type": "object",
+                    "properties": {
+                        "resolutionOptions": {
+                            "type": "object",
+                            "properties": {
+                                "publicKeyFormat": {
+                                    "type": "string"
+                                },
+                                "accept": {
+                                    "type": "string"
+                                }
+                            },
+                            "description": "Options to be passed to the DID resolver."
+                        },
+                        "packedMessage": {
+                            "$ref": "#/components/schemas/IPackedDIDCommMessage"
+                        },
+                        "messageId": {
+                            "type": "string"
+                        },
+                        "returnTransportId": {
+                            "type": "string"
+                        },
+                        "recipientDidUrl": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "packedMessage",
+                        "messageId",
+                        "recipientDidUrl"
+                    ],
+                    "description": "The input to the  {@link  IDIDComm.sendDIDCommMessage }  method. The provided `messageId` will be used in the emitted event to allow event/message correlation."
+                },
+                "ISendDIDCommMessageResponse": {
+                    "type": "object",
+                    "properties": {
+                        "transportId": {
+                            "type": "string"
+                        },
+                        "returnMessage": {
+                            "$ref": "#/components/schemas/IMessage"
+                        }
+                    },
+                    "required": [
+                        "transportId"
+                    ],
+                    "description": "The response from the  {@link  IDIDComm.sendDIDCommMessage }  method."
+                },
+                "IMessage": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "Unique message ID"
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "Message type"
+                        },
+                        "createdAt": {
+                            "type": "string",
+                            "description": "Optional. Creation date (ISO 8601)"
+                        },
+                        "expiresAt": {
+                            "type": "string",
+                            "description": "Optional. Expiration date (ISO 8601)"
+                        },
+                        "threadId": {
+                            "type": "string",
+                            "description": "Optional. Thread ID"
+                        },
+                        "raw": {
+                            "type": "string",
+                            "description": "Optional. Original message raw data"
+                        },
+                        "data": {
+                            "anyOf": [
+                                {
+                                    "type": "object"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Optional. Parsed data"
+                        },
+                        "replyTo": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Optional. List of DIDs to reply to"
+                        },
+                        "replyUrl": {
+                            "type": "string",
+                            "description": "Optional. URL to post a reply message to"
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "Optional. Sender DID"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "Optional. Recipient DID"
+                        },
+                        "metaData": {
+                            "anyOf": [
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/IMetaData"
+                                    }
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Optional. Array of message metadata"
+                        },
+                        "credentials": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/VerifiableCredential"
+                            },
+                            "description": "Optional. Array of attached verifiable credentials"
+                        },
+                        "presentations": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/VerifiablePresentation"
+                            },
+                            "description": "Optional. Array of attached verifiable presentations"
+                        },
+                        "attachments": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/IMessageAttachment"
+                            },
+                            "description": "Optional. Array of generic attachments"
+                        },
+                        "returnRoute": {
+                            "type": "string",
+                            "description": "Optional. Signal how to reuse transport for return messages"
+                        }
+                    },
+                    "required": [
+                        "id",
+                        "type"
+                    ],
+                    "description": "Represents a DIDComm v1 message payload, with optionally decoded credentials and presentations."
+                },
+                "IMetaData": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "description": "Type"
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "Optional. Value"
+                        }
+                    },
+                    "required": [
+                        "type"
+                    ],
+                    "description": "Message meta data"
+                },
+                "VerifiableCredential": {
+                    "type": "object",
+                    "properties": {
+                        "proof": {
+                            "$ref": "#/components/schemas/ProofType"
+                        },
+                        "issuer": {
+                            "$ref": "#/components/schemas/IssuerType"
+                        },
+                        "credentialSubject": {
+                            "$ref": "#/components/schemas/CredentialSubject"
+                        },
+                        "type": {
+                            "anyOf": [
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                {
+                                    "type": "string"
+                                }
+                            ]
+                        },
+                        "@context": {
+                            "$ref": "#/components/schemas/ContextType"
+                        },
+                        "issuanceDate": {
+                            "type": "string"
+                        },
+                        "expirationDate": {
+                            "type": "string"
+                        },
+                        "credentialStatus": {
+                            "$ref": "#/components/schemas/CredentialStatusReference"
+                        },
+                        "id": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "@context",
+                        "credentialSubject",
+                        "issuanceDate",
+                        "issuer",
+                        "proof"
+                    ],
+                    "description": "Represents a signed Verifiable Credential payload (includes proof), using a JSON representation. See  {@link https://www.w3.org/TR/vc-data-model/#credentials | VC data model }"
+                },
+                "ProofType": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string"
+                        }
+                    },
+                    "description": "A proof property of a  {@link  VerifiableCredential }  or  {@link  VerifiablePresentation }"
+                },
+                "IssuerType": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": [
+                                "id"
+                            ]
+                        },
+                        {
+                            "type": "string"
+                        }
+                    ],
+                    "description": "The issuer of a  {@link  VerifiableCredential }  or the holder of a  {@link  VerifiablePresentation } .\n\nThe value of the issuer property MUST be either a URI or an object containing an id property. It is RECOMMENDED that the URI in the issuer or its id be one which, if de-referenced, results in a document containing machine-readable information about the issuer that can be used to verify the information expressed in the credential.\n\nSee  {@link https://www.w3.org/TR/vc-data-model/#issuer | Issuer data model }"
+                },
+                "CredentialSubject": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string"
+                        }
+                    },
+                    "description": "The value of the credentialSubject property is defined as a set of objects that contain one or more properties that are each related to a subject of the verifiable credential. Each object MAY contain an id.\n\nSee  {@link https://www.w3.org/TR/vc-data-model/#credential-subject | Credential Subject }"
+                },
+                "ContextType": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "object"
+                        },
+                        {
+                            "type": "array",
+                            "items": {
+                                "anyOf": [
+                                    {
+                                        "type": "string"
+                                    },
+                                    {
+                                        "type": "object"
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "description": "The data type for `@context` properties of credentials, presentations, etc."
+                },
+                "CredentialStatusReference": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string"
+                        },
+                        "type": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "id",
+                        "type"
+                    ],
+                    "description": "Used for the discovery of information about the current status of a verifiable credential, such as whether it is suspended or revoked. The precise contents of the credential status information is determined by the specific `credentialStatus` type definition, and varies depending on factors such as whether it is simple to implement or if it is privacy-enhancing.\n\nSee  {@link https://www.w3.org/TR/vc-data-model/#status | Credential Status }"
+                },
+                "VerifiablePresentation": {
+                    "type": "object",
+                    "properties": {
+                        "proof": {
+                            "$ref": "#/components/schemas/ProofType"
+                        },
+                        "holder": {
+                            "type": "string"
+                        },
+                        "verifiableCredential": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/W3CVerifiableCredential"
+                            }
+                        },
+                        "type": {
+                            "anyOf": [
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                {
+                                    "type": "string"
+                                }
+                            ]
+                        },
+                        "@context": {
+                            "$ref": "#/components/schemas/ContextType"
+                        },
+                        "verifier": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "issuanceDate": {
+                            "type": "string"
+                        },
+                        "expirationDate": {
+                            "type": "string"
+                        },
+                        "id": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "@context",
+                        "holder",
+                        "proof"
+                    ],
+                    "description": "Represents a signed Verifiable Presentation (includes proof), using a JSON representation. See  {@link https://www.w3.org/TR/vc-data-model/#presentations | VP data model }"
+                },
+                "W3CVerifiableCredential": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/components/schemas/VerifiableCredential"
+                        },
+                        {
+                            "$ref": "#/components/schemas/CompactJWT"
+                        }
+                    ],
+                    "description": "Represents a signed Verifiable Credential (includes proof), in either JSON or compact JWT format. See  {@link https://www.w3.org/TR/vc-data-model/#credentials | VC data model }  See  {@link https://www.w3.org/TR/vc-data-model/#proof-formats | proof formats }"
+                },
+                "CompactJWT": {
+                    "type": "string",
+                    "description": "Represents a Json Web Token in compact form. \"header.payload.signature\""
+                },
+                "IMessageAttachment": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string"
+                        },
+                        "description": {
+                            "type": "string"
+                        },
+                        "filename": {
+                            "type": "string"
+                        },
+                        "media_type": {
+                            "type": "string"
+                        },
+                        "format": {
+                            "type": "string"
+                        },
+                        "lastmod_time": {
+                            "type": "string"
+                        },
+                        "byte_count": {
+                            "type": "number"
+                        },
+                        "data": {
+                            "$ref": "#/components/schemas/IMessageAttachmentData"
+                        }
+                    },
+                    "required": [
+                        "data"
+                    ],
+                    "description": "Message attachment"
+                },
+                "IMessageAttachmentData": {
+                    "type": "object",
+                    "properties": {
+                        "jws": {},
+                        "hash": {
+                            "type": "string"
+                        },
+                        "links": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        },
+                        "base64": {
+                            "type": "string"
+                        },
+                        "json": {}
+                    },
+                    "description": "The DIDComm message structure for data in an attachment. See https://identity.foundation/didcomm-messaging/spec/#attachments"
+                },
+                "ISendMessageDIDCommAlpha1Args": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string"
+                        },
+                        "save": {
+                            "type": "boolean"
+                        },
+                        "data": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string"
+                                },
+                                "from": {
+                                    "type": "string"
+                                },
+                                "to": {
+                                    "type": "string"
+                                },
+                                "type": {
+                                    "type": "string"
+                                },
+                                "body": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object"
+                                        },
+                                        {
+                                            "type": "string"
+                                        }
+                                    ]
+                                }
+                            },
+                            "required": [
+                                "from",
+                                "to",
+                                "type",
+                                "body"
+                            ]
+                        },
+                        "headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "required": [
+                        "data"
+                    ],
+                    "deprecated": "Please use {@link IDIDComm.sendDIDCommMessage } instead. This will be removed in Veramo 4.0.\nInput arguments for {@link IDIDComm.sendMessageDIDCommAlpha1 }"
+                },
+                "IUnpackDIDCommMessageArgs": {
+                    "type": "object",
+                    "properties": {
+                        "resolutionOptions": {
+                            "type": "object",
+                            "properties": {
+                                "publicKeyFormat": {
+                                    "type": "string"
+                                },
+                                "accept": {
+                                    "type": "string"
+                                }
+                            },
+                            "description": "Options to be passed to the DID resolver."
+                        },
+                        "message": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "message"
+                    ],
+                    "description": "The input to the  {@link  IDIDComm.unpackDIDCommMessage }  method."
+                },
+                "IUnpackedDIDCommMessage": {
+                    "type": "object",
+                    "properties": {
+                        "metaData": {
+                            "$ref": "#/components/schemas/IDIDCommMessageMetaData"
+                        },
+                        "message": {
+                            "$ref": "#/components/schemas/IDIDCommMessage"
+                        }
+                    },
+                    "required": [
+                        "metaData",
+                        "message"
+                    ],
+                    "description": "The result of unpacking a DIDComm v2 message."
+                },
+                "IDIDCommMessageMetaData": {
+                    "type": "object",
+                    "properties": {
+                        "packing": {
+                            "$ref": "#/components/schemas/DIDCommMessagePacking"
+                        }
+                    },
+                    "required": [
+                        "packing"
+                    ],
+                    "description": "Metadata resulting from unpacking a DIDComm v2 message."
+                }
+            },
+            "methods": {
+                "getDIDCommMessageMediaType": {
+                    "description": "Partially decodes a possible DIDComm message string to determine the ",
+                    "arguments": {
+                        "$ref": "#/components/schemas/IPackedDIDCommMessage"
+                    },
+                    "returnType": {
+                        "$ref": "#/components/schemas/DIDCommMessageMediaType"
+                    }
+                },
+                "packDIDCommMessage": {
+                    "description": "Packs a ",
+                    "arguments": {
+                        "$ref": "#/components/schemas/IPackDIDCommMessageArgs"
+                    },
+                    "returnType": {
+                        "$ref": "#/components/schemas/IPackedDIDCommMessage"
+                    }
+                },
+                "sendDIDCommMessage": {
+                    "description": "Sends the given message to the recipient. If a return-transport is provided it will be checked whether the parent thread allows reusing the route. You cannot reuse the transport if the message was forwarded from a DIDComm mediator.",
+                    "arguments": {
+                        "$ref": "#/components/schemas/ISendDIDCommMessageArgs"
+                    },
+                    "returnType": {
+                        "$ref": "#/components/schemas/ISendDIDCommMessageResponse"
+                    }
+                },
+                "sendMessageDIDCommAlpha1": {
+                    "description": "",
+                    "arguments": {
+                        "$ref": "#/components/schemas/ISendMessageDIDCommAlpha1Args"
+                    },
+                    "returnType": {
+                        "$ref": "#/components/schemas/IMessage"
+                    }
+                },
+                "unpackDIDCommMessage": {
+                    "description": "Unpacks a possible DIDComm message and returns the ",
+                    "arguments": {
+                        "$ref": "#/components/schemas/IUnpackDIDCommMessageArgs"
+                    },
+                    "returnType": {
+                        "$ref": "#/components/schemas/IUnpackedDIDCommMessage"
+                    }
+                }
+            }
+        }
+    }
+};
+//# sourceMappingURL=plugin.schema.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/protocols/coordinate-mediation-message-handler.js":
+/*!***********************************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/protocols/coordinate-mediation-message-handler.js ***!
+  \***********************************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   CoordinateMediationMediatorMessageHandler: () => (/* binding */ CoordinateMediationMediatorMessageHandler),
+/* harmony export */   CoordinateMediationRecipientMessageHandler: () => (/* binding */ CoordinateMediationRecipientMessageHandler),
+/* harmony export */   DELIVERY_REQUEST_MESSAGE_TYPE: () => (/* binding */ DELIVERY_REQUEST_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_DENY_MESSAGE_TYPE: () => (/* binding */ MEDIATE_DENY_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_GRANT_MESSAGE_TYPE: () => (/* binding */ MEDIATE_GRANT_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_REQUEST_MESSAGE_TYPE: () => (/* binding */ MEDIATE_REQUEST_MESSAGE_TYPE),
+/* harmony export */   STATUS_REQUEST_MESSAGE_TYPE: () => (/* binding */ STATUS_REQUEST_MESSAGE_TYPE),
+/* harmony export */   createDeliveryRequestMessage: () => (/* binding */ createDeliveryRequestMessage),
+/* harmony export */   createMediateGrantMessage: () => (/* binding */ createMediateGrantMessage),
+/* harmony export */   createMediateRequestMessage: () => (/* binding */ createMediateRequestMessage),
+/* harmony export */   createStatusRequestMessage: () => (/* binding */ createStatusRequestMessage)
+/* harmony export */ });
+/* harmony import */ var _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/message-handler */ "./node_modules/@veramo/message-handler/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var uuid__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! uuid */ "./node_modules/uuid/dist/esm-browser/v4.js");
+/* harmony import */ var _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ../types/message-types.js */ "./node_modules/@veramo/did-comm/build/types/message-types.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_1__('veramo:did-comm:coordinate-mediation-message-handler');
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const MEDIATE_REQUEST_MESSAGE_TYPE = 'https://didcomm.org/coordinate-mediation/2.0/mediate-request';
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const MEDIATE_GRANT_MESSAGE_TYPE = 'https://didcomm.org/coordinate-mediation/2.0/mediate-grant';
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const MEDIATE_DENY_MESSAGE_TYPE = 'https://didcomm.org/coordinate-mediation/2.0/mediate-deny';
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const STATUS_REQUEST_MESSAGE_TYPE = 'https://didcomm.org/messagepickup/3.0/status-request';
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const DELIVERY_REQUEST_MESSAGE_TYPE = 'https://didcomm.org/messagepickup/3.0/delivery-request';
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+function createMediateRequestMessage(recipientDidUrl, mediatorDidUrl) {
+    return {
+        type: MEDIATE_REQUEST_MESSAGE_TYPE,
+        from: recipientDidUrl,
+        to: [mediatorDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        return_route: 'all',
+        created_time: (new Date()).toISOString(),
+        body: {},
+    };
+}
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+function createMediateGrantMessage(recipientDidUrl, mediatorDidUrl, thid) {
+    return {
+        type: MEDIATE_GRANT_MESSAGE_TYPE,
+        from: mediatorDidUrl,
+        to: [recipientDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        thid: thid,
+        created_time: (new Date()).toISOString(),
+        body: {
+            routing_did: [mediatorDidUrl],
+        },
+    };
+}
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+function createStatusRequestMessage(recipientDidUrl, mediatorDidUrl) {
+    return {
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        type: STATUS_REQUEST_MESSAGE_TYPE,
+        to: [mediatorDidUrl],
+        from: recipientDidUrl,
+        return_route: 'all',
+        body: {},
+    };
+}
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+function createDeliveryRequestMessage(recipientDidUrl, mediatorDidUrl) {
+    return {
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        type: DELIVERY_REQUEST_MESSAGE_TYPE,
+        to: [mediatorDidUrl],
+        from: recipientDidUrl,
+        return_route: 'all',
+        body: { limit: 2 },
+    };
+}
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles Mediator Coordinator messages for the mediator role.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class CoordinateMediationMediatorMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    /**
+     * Handles a Mediator Coordinator messages for the mediator role
+     * https://didcomm.org/mediator-coordination/2.0/
+     */
+    async handle(message, context) {
+        if (message.type === MEDIATE_REQUEST_MESSAGE_TYPE) {
+            debug('MediateRequest Message Received');
+            try {
+                const { from, to, returnRoute } = message;
+                if (!from) {
+                    throw new Error('invalid_argument: MediateRequest received without `from` set');
+                }
+                if (!to) {
+                    throw new Error('invalid_argument: MediateRequest received without `to` set');
+                }
+                if (returnRoute === 'all') {
+                    // Grant requests to all recipients
+                    // TODO: Come up with another method for approving and rejecting recipients
+                    const response = createMediateGrantMessage(from, to, message.id);
+                    const packedResponse = await context.agent.packDIDCommMessage({
+                        message: response,
+                        packing: 'authcrypt',
+                    });
+                    const returnResponse = {
+                        id: response.id,
+                        message: packedResponse.message,
+                        contentType: _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__.DIDCommMessageMediaType.ENCRYPTED,
+                    };
+                    message.addMetaData({ type: 'ReturnRouteResponse', value: JSON.stringify(returnResponse) });
+                    // Save message to track recipients
+                    await context.agent.dataStoreSaveMessage({
+                        message: {
+                            type: response.type,
+                            from: response.from,
+                            to: (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_3__.asArray)(response.to)[0],
+                            id: response.id,
+                            threadId: response.thid,
+                            data: response.body,
+                            createdAt: response.created_time
+                        },
+                    });
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        return super.handle(message, context);
+    }
+}
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles Mediator Coordinator messages for the recipient role.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class CoordinateMediationRecipientMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    /**
+     * Handles a Mediator Coordinator messages for the recipient role
+     * https://didcomm.org/mediator-coordination/2.0/
+     */
+    async handle(message, context) {
+        if (message.type === MEDIATE_GRANT_MESSAGE_TYPE) {
+            debug('MediateGrant Message Received');
+            try {
+                const { from, to, data, threadId } = message;
+                if (!from) {
+                    throw new Error('invalid_argument: MediateGrant received without `from` set');
+                }
+                if (!to) {
+                    throw new Error('invalid_argument: MediateGrant received without `to` set');
+                }
+                if (!threadId) {
+                    throw new Error('invalid_argument: MediateGrant received without `thid` set');
+                }
+                if (!data.routing_did || data.routing_did.length === 0) {
+                    throw new Error('invalid_argument: MediateGrant received with invalid routing_did');
+                }
+                // If mediate request was previously sent, add service to DID document
+                const prevRequestMsg = await context.agent.dataStoreGetMessage({ id: threadId });
+                if (prevRequestMsg.from === to && prevRequestMsg.to === from) {
+                    const service = {
+                        id: 'didcomm-mediator',
+                        type: 'DIDCommMessaging',
+                        serviceEndpoint: [
+                            {
+                                uri: data.routing_did[0],
+                            },
+                        ],
+                    };
+                    await context.agent.didManagerAddService({
+                        did: to,
+                        service: service,
+                    });
+                    message.addMetaData({ type: 'DIDCommMessagingServiceAdded', value: JSON.stringify(service) });
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        else if (message.type === MEDIATE_DENY_MESSAGE_TYPE) {
+            debug('MediateDeny Message Received');
+            try {
+                const { from, to } = message;
+                if (!from) {
+                    throw new Error('invalid_argument: MediateGrant received without `from` set');
+                }
+                if (!to) {
+                    throw new Error('invalid_argument: MediateGrant received without `to` set');
+                }
+                // Delete service if it exists
+                const did = await context.agent.didManagerGet({
+                    did: to,
+                });
+                const existingService = did.services.find((s) => s.serviceEndpoint === from ||
+                    (Array.isArray(s.serviceEndpoint) && s.serviceEndpoint.includes(from)));
+                if (existingService) {
+                    await context.agent.didManagerRemoveService({ did: to, id: existingService.id });
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+        }
+        return super.handle(message, context);
+    }
+}
+//# sourceMappingURL=coordinate-mediation-message-handler.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/protocols/coordinate-mediation-v3-message-handler.js":
+/*!**************************************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/protocols/coordinate-mediation-v3-message-handler.js ***!
+  \**************************************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   CoordinateMediation: () => (/* binding */ CoordinateMediation),
+/* harmony export */   CoordinateMediationV3MediatorMessageHandler: () => (/* binding */ CoordinateMediationV3MediatorMessageHandler),
+/* harmony export */   CoordinateMediationV3RecipientMessageHandler: () => (/* binding */ CoordinateMediationV3RecipientMessageHandler),
+/* harmony export */   MessagePickup: () => (/* binding */ MessagePickup),
+/* harmony export */   RecipientUpdateResult: () => (/* binding */ RecipientUpdateResult),
+/* harmony export */   UpdateAction: () => (/* binding */ UpdateAction),
+/* harmony export */   createV3DeliveryRequestMessage: () => (/* binding */ createV3DeliveryRequestMessage),
+/* harmony export */   createV3MediateDenyMessage: () => (/* binding */ createV3MediateDenyMessage),
+/* harmony export */   createV3MediateGrantMessage: () => (/* binding */ createV3MediateGrantMessage),
+/* harmony export */   createV3MediateRequestMessage: () => (/* binding */ createV3MediateRequestMessage),
+/* harmony export */   createV3RecipientQueryMessage: () => (/* binding */ createV3RecipientQueryMessage),
+/* harmony export */   createV3RecipientQueryResponseMessage: () => (/* binding */ createV3RecipientQueryResponseMessage),
+/* harmony export */   createV3RecipientUpdateMessage: () => (/* binding */ createV3RecipientUpdateMessage),
+/* harmony export */   createV3RecipientUpdateResponseMessage: () => (/* binding */ createV3RecipientUpdateResponseMessage),
+/* harmony export */   createV3StatusRequestMessage: () => (/* binding */ createV3StatusRequestMessage)
+/* harmony export */ });
+/* harmony import */ var _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/message-handler */ "./node_modules/@veramo/message-handler/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var uuid__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! uuid */ "./node_modules/uuid/dist/esm-browser/v4.js");
+/* harmony import */ var _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ../types/message-types.js */ "./node_modules/@veramo/did-comm/build/types/message-types.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_1__('veramo:did-comm:coordinate-mediation-message-handler');
+const GRANTED = 'GRANTED';
+const DENIED = 'DENIED';
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ *
+ * Represents the actions (add or remove) that can be taken on a recipient did
+ *
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ */
+var UpdateAction;
+(function (UpdateAction) {
+    UpdateAction["ADD"] = "add";
+    UpdateAction["REMOVE"] = "remove";
+})(UpdateAction || (UpdateAction = {}));
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ *
+ * Represents the result of an update action
+ *
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ */
+var RecipientUpdateResult;
+(function (RecipientUpdateResult) {
+    RecipientUpdateResult["SUCCESS"] = "success";
+    RecipientUpdateResult["NO_CHANGE"] = "no_change";
+    RecipientUpdateResult["CLIENT_ERROR"] = "client_error";
+    RecipientUpdateResult["SERVER_ERROR"] = "server_error";
+})(RecipientUpdateResult || (RecipientUpdateResult = {}));
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ *
+ * Represents the types of messages that can be sent and received by the Mediator Coordinator protocol
+ *
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ * @see {@link @veramo/did-comm#CoordinateMediationRecipientMessageHandler}
+ */
+var CoordinateMediation;
+(function (CoordinateMediation) {
+    CoordinateMediation["MEDIATE_REQUEST"] = "https://didcomm.org/coordinate-mediation/3.0/mediate-request";
+    CoordinateMediation["MEDIATE_GRANT"] = "https://didcomm.org/coordinate-mediation/3.0/mediate-grant";
+    CoordinateMediation["MEDIATE_DENY"] = "https://didcomm.org/coordinate-mediation/3.0/mediate-deny";
+    CoordinateMediation["RECIPIENT_UPDATE"] = "https://didcomm.org/coordinate-mediation/3.0/recipient-update";
+    CoordinateMediation["RECIPIENT_UPDATE_RESPONSE"] = "https://didcomm.org/coordinate-mediation/3.0/recipient-update-response";
+    CoordinateMediation["RECIPIENT_QUERY"] = "https://didcomm.org/coordinate-mediation/3.0/recipient-query";
+    CoordinateMediation["RECIPIENT_QUERY_RESPONSE"] = "https://didcomm.org/coordinate-mediation/3.0/recipient";
+})(CoordinateMediation || (CoordinateMediation = {}));
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+var MessagePickup;
+(function (MessagePickup) {
+    MessagePickup["STATUS_REQUEST_MESSAGE_TYPE"] = "https://didcomm.org/messagepickup/3.0/status-request";
+    MessagePickup["DELIVERY_REQUEST_MESSAGE_TYPE"] = "https://didcomm.org/messagepickup/3.0/delivery-request";
+})(MessagePickup || (MessagePickup = {}));
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+function createV3MediateGrantMessage(recipientDidUrl, mediatorDidUrl, thid) {
+    return {
+        type: CoordinateMediation.MEDIATE_GRANT,
+        from: mediatorDidUrl,
+        to: [recipientDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        thid: thid,
+        body: { routing_did: [mediatorDidUrl] },
+        created_time: new Date().toISOString(),
+    };
+}
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const createV3MediateDenyMessage = (recipientDidUrl, mediatorDidUrl, thid) => {
+    return {
+        type: CoordinateMediation.MEDIATE_DENY,
+        from: mediatorDidUrl,
+        to: [recipientDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        thid: thid,
+        created_time: new Date().toISOString(),
+        body: null,
+    };
+};
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ */
+function createV3RecipientUpdateResponseMessage(recipientDidUrl, mediatorDidUrl, thid, updates) {
+    return {
+        type: CoordinateMediation.RECIPIENT_UPDATE_RESPONSE,
+        from: mediatorDidUrl,
+        to: [recipientDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        thid: thid,
+        body: { updates },
+        created_time: new Date().toISOString(),
+    };
+}
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ */
+const createV3RecipientQueryResponseMessage = (recipientDidUrl, mediatorDidUrl, thid, dids) => {
+    return {
+        type: CoordinateMediation.RECIPIENT_QUERY_RESPONSE,
+        from: mediatorDidUrl,
+        to: [recipientDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        thid: thid,
+        body: { dids },
+        created_time: new Date().toISOString(),
+    };
+};
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ *
+ * @returns a structured message for the Mediator Coordinator protocol
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ */
+function createV3MediateRequestMessage(recipientDidUrl, mediatorDidUrl) {
+    return {
+        type: CoordinateMediation.MEDIATE_REQUEST,
+        from: recipientDidUrl,
+        to: [mediatorDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        created_time: new Date().toISOString(),
+        body: {},
+    };
+}
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const createV3StatusRequestMessage = (recipientDidUrl, mediatorDidUrl) => {
+    return {
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        type: MessagePickup.STATUS_REQUEST_MESSAGE_TYPE,
+        to: [mediatorDidUrl],
+        from: recipientDidUrl,
+        return_route: 'all',
+        body: {},
+    };
+};
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ *
+ * @returns a structured upate message for the Mediator Coordinator protocol
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ */
+const createV3RecipientUpdateMessage = (recipientDidUrl, mediatorDidUrl, updates) => {
+    return {
+        type: CoordinateMediation.RECIPIENT_UPDATE,
+        from: recipientDidUrl,
+        to: [mediatorDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        created_time: new Date().toISOString(),
+        body: { updates },
+        return_route: 'all',
+    };
+};
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ *
+ * @returns a structured query message for the Mediator Coordinator protocol
+ * @see {@link @veramo/did-comm#CoordinateMediationV3MediatorMessageHandler}
+ */
+const createV3RecipientQueryMessage = (recipientDidUrl, mediatorDidUrl) => {
+    return {
+        type: CoordinateMediation.RECIPIENT_QUERY,
+        from: recipientDidUrl,
+        to: [mediatorDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        created_time: new Date().toISOString(),
+        body: {},
+    };
+};
+/**
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+const createV3DeliveryRequestMessage = (recipientDidUrl, mediatorDidUrl) => {
+    return {
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+        type: MessagePickup.DELIVERY_REQUEST_MESSAGE_TYPE,
+        to: [mediatorDidUrl],
+        from: recipientDidUrl,
+        return_route: 'all',
+        body: { limit: 2 },
+    };
+};
+/**
+ * Handler Type Guards
+ */
+const isMediateRequest = (message) => {
+    if (message.type !== CoordinateMediation.MEDIATE_REQUEST)
+        return false;
+    if (!message.from)
+        throw new Error('invalid_argument: MediateRequest received without `from` set');
+    if (!message.to)
+        throw new Error('invalid_argument: MediateRequest received without `to` set');
+    return true;
+};
+const isRecipientUpdate = (message) => {
+    if (message.type !== CoordinateMediation.RECIPIENT_UPDATE)
+        return false;
+    if (!message.from)
+        throw new Error('invalid_argument: RecipientUpdate received without `from` set');
+    if (!message.to)
+        throw new Error('invalid_argument: RecipientUpdate received without `to` set');
+    if (!('data' in message))
+        throw new Error('invalid_argument: RecipientUpdate received without `body` set');
+    if (!message.data || !message.data.updates) {
+        throw new Error('invalid_argument: RecipientUpdate received without `updates` set');
+    }
+    return true;
+};
+const isRecipientQuery = (message) => {
+    if (message.type !== CoordinateMediation.RECIPIENT_QUERY)
+        return false;
+    if (!message.from)
+        throw new Error('invalid_argument: RecipientQuery received without `from` set');
+    if (!message.to)
+        throw new Error('invalid_argument: RecipientQuery received without `to` set');
+    return true;
+};
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles Mediator Coordinator messages for the
+ * mediator role.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class CoordinateMediationV3MediatorMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    async grantOrDenyMediation({ from: requesterDid }, context) {
+        if (!requesterDid)
+            return DENIED;
+        const policy = await context.agent.mediationManagerGetMediationPolicy({ requesterDid });
+        if (await context.agent.isMediateDefaultGrantAll()) {
+            return policy === 'DENY' ? DENIED : GRANTED;
+        }
+        else {
+            return policy === 'ALLOW' ? GRANTED : DENIED;
+        }
+    }
+    async handleMediateRequest(message, context) {
+        try {
+            debug('MediateRequest Message Received');
+            const requesterDid = message.from;
+            const status = await this.grantOrDenyMediation(message, context);
+            await context.agent.mediationManagerSaveMediation({ status, requesterDid });
+            const getResponse = status === GRANTED ? createV3MediateGrantMessage : createV3MediateDenyMessage;
+            const response = getResponse(message.from, message.to, message.id);
+            const packedResponse = await context.agent.packDIDCommMessage({
+                message: response,
+                packing: 'authcrypt',
+            });
+            const returnResponse = {
+                id: response.id,
+                message: packedResponse.message,
+                contentType: _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__.DIDCommMessageMediaType.ENCRYPTED,
+            };
+            message.addMetaData({ type: 'ReturnRouteResponse', value: JSON.stringify(returnResponse) });
+            // Save message to track recipients
+            await context.agent.dataStoreSaveMessage({
+                message: {
+                    type: response.type,
+                    from: response.from,
+                    to: (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_3__.asArray)(response.to)[0],
+                    id: response.id,
+                    threadId: response.thid,
+                    data: response.body,
+                    createdAt: response.created_time,
+                },
+            });
+        }
+        catch (error) {
+            debug(error);
+        }
+        return message;
+    }
+    /**
+     * Used to notify the mediator of DIDs in use by the recipient
+     **/
+    async handleRecipientUpdate(message, context) {
+        try {
+            debug('MediateRecipientUpdate Message Received');
+            const updates = message.data.updates;
+            const applyUpdate = async (requesterDid, update) => {
+                const { recipient_did: recipientDid } = update;
+                try {
+                    if (update.action === UpdateAction.ADD) {
+                        await context.agent.mediationManagerAddRecipientDid({ requesterDid, recipientDid });
+                        return { ...update, result: RecipientUpdateResult.SUCCESS };
+                    }
+                    else if (update.action === UpdateAction.REMOVE) {
+                        const result = await context.agent.mediationManagerRemoveRecipientDid({ recipientDid });
+                        if (result)
+                            return { ...update, result: RecipientUpdateResult.SUCCESS };
+                        return { ...update, result: RecipientUpdateResult.NO_CHANGE };
+                    }
+                    return { ...update, result: RecipientUpdateResult.CLIENT_ERROR };
+                }
+                catch (ex) {
+                    debug(ex);
+                    return { ...update, result: RecipientUpdateResult.SERVER_ERROR };
+                }
+            };
+            const updated = await Promise.all(updates.map(async (u) => await applyUpdate(message.from, u)));
+            const response = createV3RecipientUpdateResponseMessage(message.from, message.to, message.id, updated);
+            const packedResponse = await context.agent.packDIDCommMessage({
+                message: response,
+                packing: 'authcrypt',
+            });
+            const returnResponse = {
+                id: response.id,
+                message: packedResponse.message,
+                contentType: _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__.DIDCommMessageMediaType.ENCRYPTED,
+            };
+            message.addMetaData({ type: 'ReturnRouteResponse', value: JSON.stringify(returnResponse) });
+            await context.agent.dataStoreSaveMessage({
+                message: {
+                    type: response.type,
+                    from: response.from,
+                    to: (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_3__.asArray)(response.to)[0],
+                    id: response.id,
+                    threadId: response.thid,
+                    data: response.body,
+                    createdAt: response.created_time,
+                },
+            });
+        }
+        catch (error) {
+            debug(error);
+        }
+        return message;
+    }
+    /**
+     * Query mediator for a list of DIDs registered for this connection
+     **/
+    async handleRecipientQuery(message, context) {
+        try {
+            const dids = await context.agent.mediationManagerListRecipientDids({ requesterDid: message.from });
+            const response = createV3RecipientQueryResponseMessage(message.from, message.to, message.id, dids.map((did) => ({ recipient_did: did })));
+            const packedResponse = await context.agent.packDIDCommMessage({
+                message: response,
+                packing: 'authcrypt',
+            });
+            const returnResponse = {
+                id: response.id,
+                message: packedResponse.message,
+                contentType: _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__.DIDCommMessageMediaType.ENCRYPTED,
+            };
+            message.addMetaData({ type: 'ReturnRouteResponse', value: JSON.stringify(returnResponse) });
+            await context.agent.dataStoreSaveMessage({
+                message: {
+                    type: response.type,
+                    from: response.from,
+                    to: (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_3__.asArray)(response.to)[0],
+                    id: response.id,
+                    threadId: response.thid,
+                    data: response.body,
+                    createdAt: response.created_time,
+                },
+            });
+        }
+        catch (error) {
+            debug(error);
+        }
+        return message;
+    }
+    /**
+     * Handles a Mediator Coordinator messages for the mediator role
+     * https://didcomm.org/mediator-coordination/3.0/
+     */
+    async handle(message, context) {
+        if (isMediateRequest(message))
+            return this.handleMediateRequest(message, context);
+        if (isRecipientUpdate(message))
+            return this.handleRecipientUpdate(message, context);
+        if (isRecipientQuery(message))
+            return this.handleRecipientQuery(message, context);
+        return super.handle(message, context);
+    }
+}
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles Mediator Coordinator messages for the
+ * recipient role.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class CoordinateMediationV3RecipientMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    /**
+     * Handles a Mediator Coordinator messages for the recipient role
+     * https://didcomm.org/mediator-coordination/2.0/
+     */
+    async handle(message, context) {
+        if (message.type === CoordinateMediation.MEDIATE_GRANT) {
+            debug('MediateGrant Message Received');
+            try {
+                const { from, to, data, threadId } = message;
+                if (!from) {
+                    throw new Error('invalid_argument: MediateGrant received without `from` set');
+                }
+                if (!to) {
+                    throw new Error('invalid_argument: MediateGrant received without `to` set');
+                }
+                if (!threadId) {
+                    throw new Error('invalid_argument: MediateGrant received without `thid` set');
+                }
+                if (!data.routing_did || data.routing_did.length === 0) {
+                    throw new Error('invalid_argument: MediateGrant received with invalid routing_did');
+                }
+                // If mediate request was previously sent, add service to DID document
+                const prevRequestMsg = await context.agent.dataStoreGetMessage({ id: threadId });
+                if (prevRequestMsg.from === to && prevRequestMsg.to === from) {
+                    const service = {
+                        id: 'didcomm-mediator',
+                        type: 'DIDCommMessaging',
+                        serviceEndpoint: [
+                            {
+                                uri: data.routing_did[0],
+                            },
+                        ],
+                    };
+                    await context.agent.didManagerAddService({
+                        did: to,
+                        service: service,
+                    });
+                    message.addMetaData({ type: 'DIDCommMessagingServiceAdded', value: JSON.stringify(service) });
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        else if (message.type === CoordinateMediation.MEDIATE_DENY) {
+            debug('MediateDeny Message Received');
+            try {
+                const { from, to } = message;
+                if (!from) {
+                    throw new Error('invalid_argument: MediateGrant received without `from` set');
+                }
+                if (!to) {
+                    throw new Error('invalid_argument: MediateGrant received without `to` set');
+                }
+                // Delete service if it exists
+                const did = await context.agent.didManagerGet({
+                    did: to,
+                });
+                const existingService = did.services.find((s) => s.serviceEndpoint === from ||
+                    (Array.isArray(s.serviceEndpoint) && s.serviceEndpoint.includes(from)));
+                if (existingService) {
+                    await context.agent.didManagerRemoveService({ did: to, id: existingService.id });
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+        }
+        return super.handle(message, context);
+    }
+}
+//# sourceMappingURL=coordinate-mediation-v3-message-handler.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/protocols/index.js":
+/*!****************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/protocols/index.js ***!
+  \****************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   CoordinateMediation: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.CoordinateMediation),
+/* harmony export */   CoordinateMediationMediatorMessageHandler: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.CoordinateMediationMediatorMessageHandler),
+/* harmony export */   CoordinateMediationRecipientMessageHandler: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.CoordinateMediationRecipientMessageHandler),
+/* harmony export */   CoordinateMediationV3MediatorMessageHandler: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.CoordinateMediationV3MediatorMessageHandler),
+/* harmony export */   CoordinateMediationV3RecipientMessageHandler: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.CoordinateMediationV3RecipientMessageHandler),
+/* harmony export */   DELIVERY_REQUEST_MESSAGE_TYPE: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.DELIVERY_REQUEST_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_DENY_MESSAGE_TYPE: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.MEDIATE_DENY_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_GRANT_MESSAGE_TYPE: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.MEDIATE_GRANT_MESSAGE_TYPE),
+/* harmony export */   MEDIATE_REQUEST_MESSAGE_TYPE: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.MEDIATE_REQUEST_MESSAGE_TYPE),
+/* harmony export */   MessagePickup: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.MessagePickup),
+/* harmony export */   PickupMediatorMessageHandler: () => (/* reexport safe */ _messagepickup_message_handler_js__WEBPACK_IMPORTED_MODULE_4__.PickupMediatorMessageHandler),
+/* harmony export */   PickupRecipientMessageHandler: () => (/* reexport safe */ _messagepickup_message_handler_js__WEBPACK_IMPORTED_MODULE_4__.PickupRecipientMessageHandler),
+/* harmony export */   RecipientUpdateResult: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.RecipientUpdateResult),
+/* harmony export */   RoutingMessageHandler: () => (/* reexport safe */ _routing_message_handler_js__WEBPACK_IMPORTED_MODULE_3__.RoutingMessageHandler),
+/* harmony export */   STATUS_REQUEST_MESSAGE_TYPE: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.STATUS_REQUEST_MESSAGE_TYPE),
+/* harmony export */   TrustPingMessageHandler: () => (/* reexport safe */ _trust_ping_message_handler_js__WEBPACK_IMPORTED_MODULE_0__.TrustPingMessageHandler),
+/* harmony export */   UpdateAction: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.UpdateAction),
+/* harmony export */   createDeliveryRequestMessage: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.createDeliveryRequestMessage),
+/* harmony export */   createMediateGrantMessage: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.createMediateGrantMessage),
+/* harmony export */   createMediateRequestMessage: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.createMediateRequestMessage),
+/* harmony export */   createStatusRequestMessage: () => (/* reexport safe */ _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__.createStatusRequestMessage),
+/* harmony export */   createV3DeliveryRequestMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3DeliveryRequestMessage),
+/* harmony export */   createV3MediateDenyMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3MediateDenyMessage),
+/* harmony export */   createV3MediateGrantMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3MediateGrantMessage),
+/* harmony export */   createV3MediateRequestMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3MediateRequestMessage),
+/* harmony export */   createV3RecipientQueryMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3RecipientQueryMessage),
+/* harmony export */   createV3RecipientQueryResponseMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3RecipientQueryResponseMessage),
+/* harmony export */   createV3RecipientUpdateMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3RecipientUpdateMessage),
+/* harmony export */   createV3RecipientUpdateResponseMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3RecipientUpdateResponseMessage),
+/* harmony export */   createV3StatusRequestMessage: () => (/* reexport safe */ _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.createV3StatusRequestMessage)
+/* harmony export */ });
+/* harmony import */ var _trust_ping_message_handler_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./trust-ping-message-handler.js */ "./node_modules/@veramo/did-comm/build/protocols/trust-ping-message-handler.js");
+/* harmony import */ var _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./coordinate-mediation-message-handler.js */ "./node_modules/@veramo/did-comm/build/protocols/coordinate-mediation-message-handler.js");
+/* harmony import */ var _coordinate_mediation_v3_message_handler_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./coordinate-mediation-v3-message-handler.js */ "./node_modules/@veramo/did-comm/build/protocols/coordinate-mediation-v3-message-handler.js");
+/* harmony import */ var _routing_message_handler_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./routing-message-handler.js */ "./node_modules/@veramo/did-comm/build/protocols/routing-message-handler.js");
+/* harmony import */ var _messagepickup_message_handler_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./messagepickup-message-handler.js */ "./node_modules/@veramo/did-comm/build/protocols/messagepickup-message-handler.js");
+
+
+
+
+
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/protocols/messagepickup-message-handler.js":
+/*!****************************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/protocols/messagepickup-message-handler.js ***!
+  \****************************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   DELIVERY_MESSAGE_TYPE: () => (/* binding */ DELIVERY_MESSAGE_TYPE),
+/* harmony export */   DELIVERY_REQUEST_MESSAGE_TYPE: () => (/* binding */ DELIVERY_REQUEST_MESSAGE_TYPE),
+/* harmony export */   MESSAGES_RECEIVED_MESSAGE_TYPE: () => (/* binding */ MESSAGES_RECEIVED_MESSAGE_TYPE),
+/* harmony export */   PickupMediatorMessageHandler: () => (/* binding */ PickupMediatorMessageHandler),
+/* harmony export */   PickupRecipientMessageHandler: () => (/* binding */ PickupRecipientMessageHandler),
+/* harmony export */   STATUS_MESSAGE_TYPE: () => (/* binding */ STATUS_MESSAGE_TYPE),
+/* harmony export */   STATUS_REQUEST_MESSAGE_TYPE: () => (/* binding */ STATUS_REQUEST_MESSAGE_TYPE)
+/* harmony export */ });
+/* harmony import */ var _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/message-handler */ "./node_modules/@veramo/message-handler/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var uuid__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! uuid */ "./node_modules/uuid/dist/esm-browser/v4.js");
+/* harmony import */ var _routing_message_handler_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./routing-message-handler.js */ "./node_modules/@veramo/did-comm/build/protocols/routing-message-handler.js");
+/* harmony import */ var _types_message_types_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ../types/message-types.js */ "./node_modules/@veramo/did-comm/build/types/message-types.js");
+
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_1__('veramo:did-comm:messagepickup-message-handler');
+const STATUS_REQUEST_MESSAGE_TYPE = 'https://didcomm.org/messagepickup/3.0/status-request';
+const STATUS_MESSAGE_TYPE = 'https://didcomm.org/messagepickup/3.0/status';
+const DELIVERY_REQUEST_MESSAGE_TYPE = 'https://didcomm.org/messagepickup/3.0/delivery-request';
+const DELIVERY_MESSAGE_TYPE = 'https://didcomm.org/messagepickup/3.0/delivery';
+const MESSAGES_RECEIVED_MESSAGE_TYPE = 'https://didcomm.org/messagepickup/3.0/messages-received';
+function generateGetMessagesWhereQuery(from, recipientKey) {
+    return [
+        {
+            column: 'type',
+            value: [_routing_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.QUEUE_MESSAGE_TYPE],
+            op: 'In',
+        },
+        recipientKey
+            ? {
+                column: 'to',
+                value: [recipientKey],
+                op: 'In',
+            }
+            : {
+                column: 'to',
+                value: [`${from}%`],
+                op: 'Like',
+            },
+    ];
+}
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles Pickup messages for the mediator role.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class PickupMediatorMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    /**
+     * Handles messages for Pickup protocol and mediator role
+     * https://didcomm.org/pickup/3.0/
+     */
+    async handle(message, context) {
+        if (message.type === STATUS_REQUEST_MESSAGE_TYPE) {
+            debug('Status Request Message Received');
+            try {
+                await this.replyWithStatusMessage(message, context);
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        else if (message.type === DELIVERY_REQUEST_MESSAGE_TYPE) {
+            debug('Delivery Request Message Received');
+            try {
+                const { returnRoute, data, from, to } = message;
+                if (!to) {
+                    throw new Error('invalid_argument: DeliveryRequest received without `to` set');
+                }
+                if (!from) {
+                    throw new Error('invalid_argument: DeliveryRequest received without `from` set');
+                }
+                if (!data.limit || Number.isNaN(data.limit)) {
+                    throw new Error('invalid_argument: DeliveryRequest received without `body.limit` set');
+                }
+                if (returnRoute === 'all') {
+                    const queuedMessages = await context.agent.dataStoreORMGetMessages({
+                        where: generateGetMessagesWhereQuery(from, data.recipient_key),
+                        take: data.limit,
+                    });
+                    if (queuedMessages.length == 0) {
+                        await this.replyWithStatusMessage(message, context);
+                        return message;
+                    }
+                    const attachments = queuedMessages.map((message) => {
+                        return {
+                            id: message.id,
+                            media_type: _types_message_types_js__WEBPACK_IMPORTED_MODULE_3__.DIDCommMessageMediaType.ENCRYPTED,
+                            data: {
+                                json: JSON.parse(message.raw),
+                            },
+                        };
+                    });
+                    const replyRecipientKey = data.recipient_key ? { recipient_key: data.recipient_key } : {};
+                    const replyMessage = {
+                        type: DELIVERY_MESSAGE_TYPE,
+                        from: to,
+                        to: [from],
+                        id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+                        thid: message.threadId ?? message.id,
+                        created_time: new Date().toISOString(),
+                        body: {
+                            ...replyRecipientKey,
+                        },
+                        attachments,
+                    };
+                    const packedResponse = await context.agent.packDIDCommMessage({
+                        message: replyMessage,
+                        packing: 'authcrypt',
+                    });
+                    const returnResponse = {
+                        id: replyMessage.id,
+                        message: packedResponse.message,
+                        contentType: _types_message_types_js__WEBPACK_IMPORTED_MODULE_3__.DIDCommMessageMediaType.ENCRYPTED,
+                    };
+                    message.addMetaData({ type: 'ReturnRouteResponse', value: JSON.stringify(returnResponse) });
+                }
+                else {
+                    throw new Error('No return_route found for DeliveryRequest');
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        else if (message.type === MESSAGES_RECEIVED_MESSAGE_TYPE) {
+            debug('MessagesReceived Message Received');
+            try {
+                const { data, from } = message;
+                if (!from) {
+                    throw new Error('invalid_argument: MessagesReceived received without `from` set');
+                }
+                if (!data.message_id_list || !Array.isArray(data.message_id_list)) {
+                    throw new Error('invalid_argument: MessagesReceived received without `body.message_id_list` set');
+                }
+                await Promise.all(data.message_id_list.map(async (messageId) => {
+                    const message = await context.agent.dataStoreGetMessage({ id: messageId });
+                    // Delete message if meant for recipient
+                    if (message.to?.startsWith(`${from}#`)) {
+                        await context.agent.dataStoreDeleteMessage({ id: messageId });
+                        context.agent.emit('DIDCommV2Message-forwardMessageDequeued', messageId);
+                    }
+                }));
+                await this.replyWithStatusMessage(message, context);
+            }
+            catch (ex) {
+                debug(ex);
+            }
+        }
+        return super.handle(message, context);
+    }
+    async replyWithStatusMessage(message, context) {
+        const { returnRoute, data, from, to } = message;
+        if (!to) {
+            throw new Error('invalid_argument: StatusRequest received without `to` set');
+        }
+        if (!from) {
+            throw new Error('invalid_argument: StatusRequest received without `from` set');
+        }
+        if (returnRoute === 'all') {
+            const queuedMessageCount = await context.agent.dataStoreORMGetMessagesCount({
+                where: generateGetMessagesWhereQuery(from, data.recipient_key),
+            });
+            const replyRecipientKey = data.recipient_key ? { recipient_key: data.recipient_key } : {};
+            const replyMessage = {
+                type: STATUS_MESSAGE_TYPE,
+                from: to,
+                to: [from],
+                id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+                thid: message.threadId ?? message.id,
+                created_time: new Date().toISOString(),
+                body: {
+                    message_count: queuedMessageCount,
+                    live_delivery: false,
+                    ...replyRecipientKey,
+                },
+            };
+            const packedResponse = await context.agent.packDIDCommMessage({
+                message: replyMessage,
+                packing: 'authcrypt',
+            });
+            const returnResponse = {
+                id: replyMessage.id,
+                message: packedResponse.message,
+                contentType: _types_message_types_js__WEBPACK_IMPORTED_MODULE_3__.DIDCommMessageMediaType.ENCRYPTED,
+            };
+            message.addMetaData({ type: 'ReturnRouteResponse', value: JSON.stringify(returnResponse) });
+        }
+        else {
+            throw new Error('No return_route found for StatusRequest');
+        }
+    }
+}
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles Pickup messages for the mediator role.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class PickupRecipientMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    /**
+     * Handles messages for Pickup protocol and recipient role
+     * https://didcomm.org/pickup/3.0/
+     */
+    async handle(message, context) {
+        if (message.type === DELIVERY_MESSAGE_TYPE) {
+            debug('Message Delivery batch Received');
+            try {
+                const { attachments, to, from } = message;
+                if (!to) {
+                    throw new Error('invalid_argument: StatusRequest received without `to` set');
+                }
+                if (!from) {
+                    throw new Error('invalid_argument: StatusRequest received without `from` set');
+                }
+                if (!attachments) {
+                    throw new Error('invalid_argument: MessagesDelivery received without `attachments` set');
+                }
+                // 1. Handle batch of messages
+                const messageIds = await Promise.all(attachments.map(async (attachment) => {
+                    await context.agent.handleMessage({
+                        raw: JSON.stringify(attachment.data.json),
+                        metaData: [{ type: 'didCommMsgFromMediator', value: attachment.id }],
+                    });
+                    return attachment.id;
+                }));
+                // 2. Reply with messages-received
+                const replyMessage = {
+                    type: MESSAGES_RECEIVED_MESSAGE_TYPE,
+                    from: to,
+                    to: [from],
+                    id: (0,uuid__WEBPACK_IMPORTED_MODULE_4__["default"])(),
+                    thid: message.threadId ?? message.id,
+                    created_time: new Date().toISOString(),
+                    return_route: 'all',
+                    body: {
+                        message_id_list: messageIds,
+                    },
+                };
+                const packedResponse = await context.agent.packDIDCommMessage({
+                    message: replyMessage,
+                    packing: 'authcrypt',
+                });
+                await context.agent.sendDIDCommMessage({
+                    packedMessage: packedResponse,
+                    messageId: replyMessage.id,
+                    recipientDidUrl: from,
+                });
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        return super.handle(message, context);
+    }
+}
+//# sourceMappingURL=messagepickup-message-handler.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/protocols/routing-message-handler.js":
+/*!**********************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/protocols/routing-message-handler.js ***!
+  \**********************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   FORWARD_MESSAGE_TYPE: () => (/* binding */ FORWARD_MESSAGE_TYPE),
+/* harmony export */   QUEUE_MESSAGE_TYPE: () => (/* binding */ QUEUE_MESSAGE_TYPE),
+/* harmony export */   RoutingMessageHandler: () => (/* binding */ RoutingMessageHandler)
+/* harmony export */ });
+/* harmony import */ var _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/message-handler */ "./node_modules/@veramo/message-handler/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var uuid__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! uuid */ "./node_modules/uuid/dist/esm-browser/v4.js");
+/* harmony import */ var _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./coordinate-mediation-message-handler.js */ "./node_modules/@veramo/did-comm/build/protocols/coordinate-mediation-message-handler.js");
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_1__('veramo:did-comm:routing-message-handler');
+const FORWARD_MESSAGE_TYPE = 'https://didcomm.org/routing/2.0/forward';
+const QUEUE_MESSAGE_TYPE = 'https://didcomm.org/routing/2.0/forward/queue-message';
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles forward messages for the Routing
+ * protocol.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class RoutingMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    isV2MediationGranted = async (message, context) => {
+        // Check if receiver has been granted mediation
+        const mediationResponses = await context.agent.dataStoreORMGetMessages({
+            where: [
+                {
+                    column: 'type',
+                    value: [_coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.MEDIATE_GRANT_MESSAGE_TYPE, _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.MEDIATE_DENY_MESSAGE_TYPE],
+                    op: 'In',
+                },
+                {
+                    column: 'to',
+                    value: [message.data.next],
+                    op: 'In',
+                },
+            ],
+            order: [{ column: 'createdAt', direction: 'DESC' }],
+        });
+        return mediationResponses.length > 0 && mediationResponses[0].type === _coordinate_mediation_message_handler_js__WEBPACK_IMPORTED_MODULE_2__.MEDIATE_GRANT_MESSAGE_TYPE;
+    };
+    isV3MediationGranted = async (recipientDid, context) => {
+        /**
+         * NOTE: the below check is used to determine if the agent is using the v3 mediation manager
+         **/
+        if (typeof context.agent.mediationManagerIsMediationGranted === 'function') {
+            return await context.agent.mediationManagerIsMediationGranted({ recipientDid });
+        }
+        return false;
+    };
+    /**
+     * Handles forward messages for Routing protocol
+     * https://didcomm.org/routing/2.0/
+     */
+    async handle(message, context) {
+        if (message.type === FORWARD_MESSAGE_TYPE) {
+            debug('Forward Message Received');
+            try {
+                const { attachments, data: { next: recipientDid = '' } = {} } = message;
+                if (!attachments)
+                    throw new Error('invalid_argument: Forward received without `attachments` set');
+                if (!recipientDid)
+                    throw new Error('invalid_argument: Forward received without `body.next` set');
+                if (attachments.length) {
+                    const isMediationGranted = (await this.isV3MediationGranted(recipientDid, context)) ||
+                        (await this.isV2MediationGranted(message, context));
+                    if (isMediationGranted) {
+                        const recipients = attachments[0].data.json.recipients;
+                        for (let i = 0; i < recipients.length; i++) {
+                            const recipient = recipients[i].header.kid;
+                            // Save message for queue
+                            const messageToQueue = new _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.Message({ raw: JSON.stringify(attachments[0].data.json) });
+                            messageToQueue.id = (0,uuid__WEBPACK_IMPORTED_MODULE_3__["default"])();
+                            messageToQueue.type = QUEUE_MESSAGE_TYPE;
+                            messageToQueue.to = recipient;
+                            messageToQueue.createdAt = new Date().toISOString();
+                            messageToQueue.addMetaData({ type: 'didCommForwardMsgId', value: message.id });
+                            await context.agent.dataStoreSaveMessage({ message: messageToQueue });
+                            context.agent.emit('DIDCommV2Message-forwardMessageQueued', messageToQueue);
+                        }
+                    }
+                    else {
+                        debug('Forward received for DID without granting mediation');
+                    }
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        return super.handle(message, context);
+    }
+}
+//# sourceMappingURL=routing-message-handler.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/protocols/trust-ping-message-handler.js":
+/*!*************************************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/protocols/trust-ping-message-handler.js ***!
+  \*************************************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   TrustPingMessageHandler: () => (/* binding */ TrustPingMessageHandler),
+/* harmony export */   createTrustPingMessage: () => (/* binding */ createTrustPingMessage),
+/* harmony export */   createTrustPingResponse: () => (/* binding */ createTrustPingResponse)
+/* harmony export */ });
+/* harmony import */ var _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/message-handler */ "./node_modules/@veramo/message-handler/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var uuid__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! uuid */ "./node_modules/uuid/dist/esm-browser/v4.js");
+/* harmony import */ var _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ../types/message-types.js */ "./node_modules/@veramo/did-comm/build/types/message-types.js");
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_1__('veramo:did-comm:trust-ping-message-handler');
+const TRUST_PING_MESSAGE_TYPE = 'https://didcomm.org/trust-ping/2.0/ping';
+const TRUST_PING_RESPONSE_MESSAGE_TYPE = 'https://didcomm.org/trust-ping/2.0/ping-response';
+function createTrustPingMessage(senderDidUrl, recipientDidUrl) {
+    return {
+        type: TRUST_PING_MESSAGE_TYPE,
+        from: senderDidUrl,
+        to: [recipientDidUrl],
+        id: (0,uuid__WEBPACK_IMPORTED_MODULE_3__["default"])(),
+        body: {
+            responseRequested: true,
+        },
+    };
+}
+function createTrustPingResponse(senderDidUrl, recipientDidUrl, pingId) {
+    return {
+        type: TRUST_PING_RESPONSE_MESSAGE_TYPE,
+        from: senderDidUrl,
+        to: [recipientDidUrl],
+        id: `${pingId}-response`,
+        thid: pingId,
+        body: {},
+    };
+}
+/**
+ * A plugin for the {@link @veramo/message-handler#MessageHandler} that handles Trust Ping messages.
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class TrustPingMessageHandler extends _veramo_message_handler__WEBPACK_IMPORTED_MODULE_0__.AbstractMessageHandler {
+    constructor() {
+        super();
+    }
+    /**
+     * Handles a Trust Ping Message
+     * https://identity.foundation/didcomm-messaging/spec/#trust-ping-protocol-10
+     */
+    async handle(message, context) {
+        if (message.type === TRUST_PING_MESSAGE_TYPE) {
+            debug('TrustPing Message Received');
+            try {
+                const { from, to, id } = message;
+                if (!from) {
+                    throw new Error('invalid_argument: Trust Ping Message received without `from` set');
+                }
+                if (!to) {
+                    throw new Error('invalid_argument: Trust Ping Message received without `to` set');
+                }
+                const response = createTrustPingResponse(to, from, id);
+                const packedResponse = await context.agent.packDIDCommMessage({
+                    message: response,
+                    packing: 'authcrypt',
+                });
+                try {
+                    const sent = await context.agent.sendDIDCommMessage({
+                        messageId: response.id,
+                        packedMessage: packedResponse,
+                        recipientDidUrl: from,
+                    });
+                    message.addMetaData({ type: 'TrustPingResponseSent', value: JSON.stringify(sent) });
+                }
+                catch (e) {
+                    debug(e);
+                }
+                if (message.returnRoute === 'all') {
+                    const returnResponse = {
+                        id: response.id,
+                        message: packedResponse.message,
+                        contentType: _types_message_types_js__WEBPACK_IMPORTED_MODULE_2__.DIDCommMessageMediaType.ENCRYPTED,
+                    };
+                    message.addMetaData({ type: 'ReturnRouteResponse', value: JSON.stringify(returnResponse) });
+                }
+            }
+            catch (ex) {
+                debug(ex);
+            }
+            return message;
+        }
+        else if (message.type === TRUST_PING_RESPONSE_MESSAGE_TYPE) {
+            debug('TrustPingResponse Message Received');
+            message.addMetaData({ type: 'TrustPingResponseReceived', value: 'true' });
+            return message;
+        }
+        return super.handle(message, context);
+    }
+}
+//# sourceMappingURL=trust-ping-message-handler.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/transports/transports.js":
+/*!**********************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/transports/transports.js ***!
+  \**********************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   AbstractDIDCommTransport: () => (/* binding */ AbstractDIDCommTransport),
+/* harmony export */   DIDCommHttpTransport: () => (/* binding */ DIDCommHttpTransport)
+/* harmony export */ });
+/* harmony import */ var uuid__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! uuid */ "./node_modules/uuid/dist/esm-browser/v4.js");
+/* harmony import */ var cross_fetch__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! cross-fetch */ "./node_modules/cross-fetch/dist/browser-ponyfill.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_2__('veramo:did-comm:http-transport');
+/**
+ * Abstract implementation of {@link IDIDCommTransport}.
+ *
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class AbstractDIDCommTransport {
+    id;
+    /**
+     * Shared constructor that takes an optional identifier (for reusing) for
+     * this {@link IDIDCommTransport}.
+     *
+     * @param id - An optional identifier for this {@link IDIDCommTransport}.
+     *
+     * @beta This API may change without a BREAKING CHANGE notice.
+     */
+    constructor(id) {
+        this.id = id || (0,uuid__WEBPACK_IMPORTED_MODULE_3__["default"])();
+    }
+}
+/**
+ * Implementation of {@link IDIDCommTransport} to provide a simple
+ * transport based on HTTP(S) requests.
+ *
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+class DIDCommHttpTransport extends AbstractDIDCommTransport {
+    /**
+     * Defines the default HTTP method to use if not specified
+     * in the DID Document service entry of the recipient.
+     */
+    httpMethod;
+    /**
+     * Creates a new {@link DIDCommHttpTransport}.
+     * @param httpMethod - Default HTTP method if not specified in the service
+     * section.
+     */
+    constructor(httpMethod) {
+        super();
+        this.httpMethod = httpMethod || 'post';
+    }
+    /** {@inheritdoc AbstractDIDCommTransport.isServiceSupported} */
+    isServiceSupported(service) {
+        // serviceEndpoint can be a string, a ServiceEndpoint object, or an array of strings or ServiceEndpoint objects
+        return ((typeof service.serviceEndpoint === 'string' &&
+            (service.serviceEndpoint.startsWith('http://') || service.serviceEndpoint.startsWith('https://'))) ||
+            (service.serviceEndpoint.uri &&
+                typeof service.serviceEndpoint.uri === 'string' &&
+                (service.serviceEndpoint.uri.startsWith('http://') ||
+                    service.serviceEndpoint.uri.startsWith('https://'))) ||
+            (service.serviceEndpoint.length > 0 &&
+                typeof service.serviceEndpoint[0] === 'string' &&
+                (service.serviceEndpoint[0].startsWith('http://') ||
+                    service.serviceEndpoint[0].startsWith('https://'))) ||
+            (service.serviceEndpoint.length > 0 &&
+                typeof service.serviceEndpoint[0].uri === 'string' &&
+                (service.serviceEndpoint[0].uri.startsWith('http://') ||
+                    service.serviceEndpoint[0].uri.startsWith('https://'))));
+    }
+    /** {@inheritdoc AbstractDIDCommTransport.send} */
+    async send(service, message) {
+        let serviceEndpointUrl = '';
+        if (typeof service.serviceEndpoint === 'string') {
+            serviceEndpointUrl = service.serviceEndpoint;
+        }
+        else if (service.serviceEndpoint.uri) {
+            serviceEndpointUrl = service.serviceEndpoint.uri;
+        }
+        else if (service.serviceEndpoint.length > 0) {
+            if (typeof service.serviceEndpoint[0] === 'string') {
+                serviceEndpointUrl = service.serviceEndpoint[0];
+            }
+            else if (service.serviceEndpoint[0].uri) {
+                serviceEndpointUrl = service.serviceEndpoint[0].uri;
+            }
+        }
+        try {
+            const contentType = this.inferContentType(message);
+            debug(`Sending message to ${serviceEndpointUrl}`);
+            const response = await (0,cross_fetch__WEBPACK_IMPORTED_MODULE_0__.fetch)(serviceEndpointUrl, {
+                method: this.httpMethod,
+                body: message,
+                headers: {
+                    'content-type': contentType,
+                },
+            });
+            let result;
+            debug(`Response: ${JSON.stringify(response)}`);
+            if (response.ok) {
+                let returnMessage;
+                // Check if response is a DIDComm message
+                if (response.headers.get('Content-Type')?.startsWith('application/didcomm')) {
+                    returnMessage = await response.json();
+                }
+                result = {
+                    result: 'successfully sent message: ' + response.statusText,
+                    returnMessage: returnMessage,
+                };
+            }
+            else {
+                result = {
+                    error: 'failed to send message: ' + response.statusText,
+                };
+            }
+            return result;
+        }
+        catch (e) {
+            return {
+                error: 'failed to send message: ' + e,
+            };
+        }
+    }
+    inferContentType(message) {
+        try {
+            const parsedMessage = JSON.parse(message);
+            const contentType = parsedMessage?.typ ??
+                JSON.parse((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.decodeBase64url)(parsedMessage.protected ?? '{}'))?.typ ??
+                'application/json';
+            return contentType;
+        }
+        catch (e) {
+            return 'application/json';
+        }
+    }
+}
+//# sourceMappingURL=transports.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/types/IDIDComm.js":
+/*!***************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/types/IDIDComm.js ***!
+  \***************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+
+//# sourceMappingURL=IDIDComm.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/types/message-types.js":
+/*!********************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/types/message-types.js ***!
+  \********************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   DIDCommMessageMediaType: () => (/* binding */ DIDCommMessageMediaType)
+/* harmony export */ });
+/**
+ * Represents different DIDComm v2 message encapsulation.
+ *
+ * @beta This API may change without a BREAKING CHANGE notice.
+ */
+var DIDCommMessageMediaType;
+(function (DIDCommMessageMediaType) {
+    /**
+     * A plain JSON DIDComm message
+     */
+    DIDCommMessageMediaType["PLAIN"] = "application/didcomm-plain+json";
+    /**
+     * A JWS signed DIDComm message
+     */
+    DIDCommMessageMediaType["SIGNED"] = "application/didcomm-signed+json";
+    /**
+     * A JWE encrypted DIDComm message
+     */
+    DIDCommMessageMediaType["ENCRYPTED"] = "application/didcomm-encrypted+json";
+})(DIDCommMessageMediaType || (DIDCommMessageMediaType = {}));
+//# sourceMappingURL=message-types.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/types/utility-types.js":
+/*!********************************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/types/utility-types.js ***!
+  \********************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+
+//# sourceMappingURL=utility-types.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-comm/build/utils.js":
+/*!******************************************************!*\
+  !*** ./node_modules/@veramo/did-comm/build/utils.js ***!
+  \******************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   createEcdhWrapper: () => (/* binding */ createEcdhWrapper),
+/* harmony export */   extractManagedRecipients: () => (/* binding */ extractManagedRecipients),
+/* harmony export */   extractSenderEncryptionKey: () => (/* binding */ extractSenderEncryptionKey),
+/* harmony export */   generateX25519KeyPair: () => (/* binding */ generateX25519KeyPair),
+/* harmony export */   generateX25519KeyPairFromSeed: () => (/* binding */ generateX25519KeyPairFromSeed),
+/* harmony export */   mapRecipientsToLocalKeys: () => (/* binding */ mapRecipientsToLocalKeys)
+/* harmony export */ });
+/* harmony import */ var did_resolver__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! did-resolver */ "./node_modules/did-resolver/lib/resolver.module.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var _noble_curves_ed25519__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! @noble/curves/ed25519 */ "./node_modules/@noble/curves/esm/ed25519.js");
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_0__('veramo:did-comm:action-handler');
+function createEcdhWrapper(secretKeyRef, context) {
+    return async (theirPublicKey) => {
+        if (theirPublicKey.length !== 32) {
+            throw new Error('invalid_argument: incorrect publicKey key length for X25519');
+        }
+        const publicKey = { type: 'X25519', publicKeyHex: (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.bytesToHex)(theirPublicKey) };
+        const shared = await context.agent.keyManagerSharedSecret({ secretKeyRef, publicKey });
+        return (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.hexToBytes)(shared);
+    };
+}
+async function extractSenderEncryptionKey(jwe, context, resolutionOptions) {
+    let senderKey = null;
+    const protectedHeader = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.decodeJoseBlob)(jwe.protected);
+    if (typeof protectedHeader.skid === 'string') {
+        const senderDoc = await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.resolveDidOrThrow)(protectedHeader.skid, context, resolutionOptions);
+        const sKey = (await context.agent.getDIDComponentById({
+            didDocument: senderDoc,
+            didUrl: protectedHeader.skid,
+            section: 'keyAgreement',
+        }));
+        let { publicKeyHex, keyType } = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.extractPublicKeyHex)(sKey, true);
+        if (keyType !== 'X25519') {
+            throw new Error(`not_supported: sender key of type ${sKey.type} is not supported`);
+        }
+        senderKey = (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.hexToBytes)(publicKeyHex);
+    }
+    return senderKey;
+}
+async function extractManagedRecipients(jwe, context) {
+    const parsedDIDs = (jwe.recipients || [])
+        .map((recipient) => {
+        const kid = recipient?.header?.kid;
+        const did = (0,did_resolver__WEBPACK_IMPORTED_MODULE_2__.parse)(kid || '')?.did;
+        if (kid && did) {
+            return { recipient, kid, did };
+        }
+        else {
+            return null;
+        }
+    })
+        .filter(_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.isDefined);
+    let managedRecipients = (await Promise.all(parsedDIDs.map(async ({ recipient, kid, did }) => {
+        try {
+            const identifier = await context.agent.didManagerGet({ did });
+            return { recipient, kid, identifier };
+        }
+        catch (e) {
+            // identifier not found, skip it
+            return null;
+        }
+    }))).filter(_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.isDefined);
+    return managedRecipients;
+}
+async function mapRecipientsToLocalKeys(managedKeys, context, resolutionOptions) {
+    const potentialKeys = await Promise.all(managedKeys.map(async ({ recipient, kid, identifier }) => {
+        // TODO: use caching, since all recipients are supposed to belong to the same identifier
+        const identifierKeys = await (0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.mapIdentifierKeysToDoc)(identifier, 'keyAgreement', context, resolutionOptions);
+        const localKey = identifierKeys.find((key) => key.meta.verificationMethod.id === kid);
+        if (localKey) {
+            return { localKeyRef: localKey.kid, recipient };
+        }
+        else {
+            return null;
+        }
+    }));
+    const localKeys = potentialKeys.filter(_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.isDefined);
+    return localKeys;
+}
+/**
+ * Generate private-public x25519 key pair
+ */
+function generateX25519KeyPair() {
+    const secretKey = _noble_curves_ed25519__WEBPACK_IMPORTED_MODULE_3__.x25519.utils.randomPrivateKey();
+    return generateX25519KeyPairFromSeed(secretKey);
+}
+/**
+ * Generate private-public x25519 key pair from a 32 byte secret.
+ */
+function generateX25519KeyPairFromSeed(seed) {
+    if (seed.length !== 32) {
+        throw new Error(`x25519: seed must be 32 bytes`);
+    }
+    return {
+        publicKey: _noble_curves_ed25519__WEBPACK_IMPORTED_MODULE_3__.x25519.getPublicKey(seed),
+        secretKey: seed,
+    };
+}
+//# sourceMappingURL=utils.js.map
+
+/***/ }),
+
 /***/ "./node_modules/@veramo/did-manager/build/abstract-identifier-provider.js":
 /*!********************************************************************************!*\
   !*** ./node_modules/@veramo/did-manager/build/abstract-identifier-provider.js ***!
@@ -20409,6 +26234,225 @@ function getDidKeyResolver() {
     return { key: resolveDidKey };
 }
 //# sourceMappingURL=resolver.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-resolver/build/index.js":
+/*!**********************************************************!*\
+  !*** ./node_modules/@veramo/did-resolver/build/index.js ***!
+  \**********************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   DIDResolverPlugin: () => (/* reexport safe */ _resolver_js__WEBPACK_IMPORTED_MODULE_0__.DIDResolverPlugin),
+/* harmony export */   UniversalResolver: () => (/* reexport safe */ _universal_resolver_js__WEBPACK_IMPORTED_MODULE_1__.UniversalResolver),
+/* harmony export */   getUniversalResolver: () => (/* reexport safe */ _universal_resolver_js__WEBPACK_IMPORTED_MODULE_1__.getUniversalResolver),
+/* harmony export */   getUniversalResolverFor: () => (/* reexport safe */ _universal_resolver_js__WEBPACK_IMPORTED_MODULE_1__.getUniversalResolverFor)
+/* harmony export */ });
+/* harmony import */ var _resolver_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./resolver.js */ "./node_modules/@veramo/did-resolver/build/resolver.js");
+/* harmony import */ var _universal_resolver_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./universal-resolver.js */ "./node_modules/@veramo/did-resolver/build/universal-resolver.js");
+/**
+ * Provides a {@link @veramo/did-resolver#DIDResolverPlugin | plugin} for the {@link @veramo/core#Agent}
+ * that implements {@link @veramo/core-types#IResolver } interface.
+ *
+ * @packageDocumentation
+ */
+
+
+//# sourceMappingURL=index.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-resolver/build/resolver.js":
+/*!*************************************************************!*\
+  !*** ./node_modules/@veramo/did-resolver/build/resolver.js ***!
+  \*************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   DIDResolverPlugin: () => (/* binding */ DIDResolverPlugin)
+/* harmony export */ });
+/* harmony import */ var _veramo_core_types__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! @veramo/core-types */ "./node_modules/@veramo/core-types/build/index.js");
+/* harmony import */ var _veramo_utils__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! @veramo/utils */ "./node_modules/@veramo/utils/build/index.js");
+/* harmony import */ var did_resolver__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! did-resolver */ "./node_modules/did-resolver/lib/resolver.module.js");
+/* harmony import */ var debug__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! debug */ "./node_modules/debug/src/browser.js");
+
+
+
+
+const debug = debug__WEBPACK_IMPORTED_MODULE_2__('veramo:resolver');
+/**
+ * A Veramo Plugin that enables users to resolve DID documents.
+ *
+ * This plugin is used automatically by plugins that create or verify Verifiable Credentials or Presentations or when
+ * working with DIDComm
+ *
+ * @public
+ */
+class DIDResolverPlugin {
+    methods;
+    schema = _veramo_core_types__WEBPACK_IMPORTED_MODULE_0__.schema.IResolver;
+    didResolver;
+    constructor(options) {
+        const { resolver, ...resolverMap } = options;
+        if ((0,_veramo_utils__WEBPACK_IMPORTED_MODULE_1__.isDefined)(resolver)) {
+            this.didResolver = resolver;
+        }
+        else if (Object.keys(resolverMap).length > 0) {
+            this.didResolver = new did_resolver__WEBPACK_IMPORTED_MODULE_3__.Resolver(resolverMap);
+        }
+        else {
+            throw Error('invalid_setup: The DIDResolverPlugin must be initialized with a Resolvable or a map of methods to DIDResolver implementations');
+        }
+        this.methods = {
+            resolveDid: this.resolveDid.bind(this),
+            getDIDComponentById: this.getDIDComponentById.bind(this),
+        };
+    }
+    /** {@inheritDoc @veramo/core-types#IResolver.resolveDid} */
+    async resolveDid({ didUrl, options, }) {
+        debug('Resolving %s', didUrl);
+        const resolverOptions = {
+            accept: 'application/did+ld+json',
+            ...options,
+        };
+        // ensure the required fields are present, even if the resolver is not compliant
+        const cannedResponse = {
+            didDocumentMetadata: {},
+            didResolutionMetadata: {},
+            didDocument: null,
+        };
+        const resolution = await this.didResolver.resolve(didUrl, resolverOptions);
+        return {
+            ...cannedResponse,
+            ...resolution,
+        };
+    }
+    /** {@inheritDoc @veramo/core-types#IResolver.getDIDComponentById} */
+    async getDIDComponentById({ didDocument, didUrl, section, }) {
+        debug('Resolving %s', didUrl);
+        const did = (0,did_resolver__WEBPACK_IMPORTED_MODULE_3__.parse)(didUrl)?.did || didDocument.id;
+        const doc = didDocument;
+        const mainSections = [...(doc.verificationMethod || []), ...(doc.publicKey || []), ...(doc.service || [])];
+        const subsection = section ? [...(doc[section] || [])] : mainSections;
+        let result = subsection.find((item) => {
+            if (typeof item === 'string') {
+                return item === didUrl || `${did}${item}` === didUrl;
+            }
+            else {
+                return item.id === didUrl || `${did}${item.id}` === didUrl;
+            }
+        });
+        if (typeof result === 'string') {
+            result = mainSections.find((item) => item.id === didUrl || `${did}${item.id}` === didUrl || item.id === `${did}${didUrl}`);
+        }
+        if (!result) {
+            const err = `not_found: DID document fragment (${didUrl}) could not be located.`;
+            debug(err);
+            throw new Error(err);
+        }
+        else if (result.id.startsWith('#')) {
+            // fix did documents that use only the fragment part as key ID
+            result.id = `${did}${result.id}`;
+        }
+        return result;
+    }
+}
+//# sourceMappingURL=resolver.js.map
+
+/***/ }),
+
+/***/ "./node_modules/@veramo/did-resolver/build/universal-resolver.js":
+/*!***********************************************************************!*\
+  !*** ./node_modules/@veramo/did-resolver/build/universal-resolver.js ***!
+  \***********************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   UniversalResolver: () => (/* binding */ UniversalResolver),
+/* harmony export */   getUniversalResolver: () => (/* binding */ getUniversalResolver),
+/* harmony export */   getUniversalResolverFor: () => (/* binding */ getUniversalResolverFor)
+/* harmony export */ });
+/* harmony import */ var cross_fetch__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! cross-fetch */ "./node_modules/cross-fetch/dist/browser-ponyfill.js");
+
+/**
+ * @deprecated please use `getUniresolver(url)` or `getUniresolverFor(methods, url)` instead
+ *
+ * @internal
+ */
+class UniversalResolver {
+    constructor(options) {
+        return getUniversalResolver(options.url);
+    }
+}
+/**
+ * Creates a DIDResolver instance that can be used with `did-resolver`
+ *
+ * @example
+ * ```typescript
+ * const uniResolver = getUniversalResolver()
+ * const resolver = new Resolver({
+ *   web: uniResolver,
+ *   key: uniResolver,
+ *   elem: uniResolver
+ * })
+ * ```
+ *
+ * @param url - the URL for the universal resolver instance (See https://uniresolver.io )
+ * @returns `DIDResolver`
+ *
+ * @public
+ */
+function getUniversalResolver(url = 'https://dev.uniresolver.io/1.0/identifiers/') {
+    if (!url) {
+        throw Error('[did-resolver] Universal: url required');
+    }
+    const resolve = async (didUrl) => {
+        try {
+            const headers = { 'Accept': 'application/ld+json;profile="https://w3id.org/did-resolution"' };
+            const result = await cross_fetch__WEBPACK_IMPORTED_MODULE_0__(url + didUrl, { headers });
+            const ddo = await result.json();
+            return ddo;
+        }
+        catch (e) {
+            return Promise.reject(e);
+        }
+    };
+    return resolve;
+}
+/**
+ * Creates a mapping of DID methods to a DIDResolver instance that can be used with `did-resolver`
+ *
+ * @example
+ * ```typescript
+ * const uniResolver = getUniversalResolverFor(['web', 'key', 'elem'])
+ * const resolver = new Resolver({
+ *   ...uniResolver,
+ *   // other resolvers
+ * })
+ * ```
+ *
+ * @param methods - an array of DID methods that should be resolved by this universal resolver
+ * @param url - the URL for the universal resolver instance (See https://uniresolver.io )
+ * @returns `Record<string, DIDResolver>` a mapping of the given methods to an instance of `DIDResolver`
+ *
+ * @public
+ */
+function getUniversalResolverFor(methods, url = 'https://dev.uniresolver.io/1.0/identifiers/') {
+    const uniResolver = getUniversalResolver(url);
+    const mapping = {};
+    for (const method of methods) {
+        mapping[method] = uniResolver;
+    }
+    return mapping;
+}
+//# sourceMappingURL=universal-resolver.js.map
 
 /***/ }),
 
@@ -25528,6 +31572,700 @@ module.exports = function serialize (object) {
   }, '');
   return `{${values}}`;
 };
+
+
+/***/ }),
+
+/***/ "./node_modules/cross-fetch/dist/browser-ponyfill.js":
+/*!***********************************************************!*\
+  !*** ./node_modules/cross-fetch/dist/browser-ponyfill.js ***!
+  \***********************************************************/
+/***/ ((module, exports, __webpack_require__) => {
+
+// Save global object in a variable
+var __global__ =
+(typeof globalThis !== 'undefined' && globalThis) ||
+(typeof self !== 'undefined' && self) ||
+(typeof __webpack_require__.g !== 'undefined' && __webpack_require__.g);
+// Create an object that extends from __global__ without the fetch function
+var __globalThis__ = (function () {
+function F() {
+this.fetch = false;
+this.DOMException = __global__.DOMException
+}
+F.prototype = __global__; // Needed for feature detection on whatwg-fetch's code
+return new F();
+})();
+// Wraps whatwg-fetch with a function scope to hijack the global object
+// "globalThis" that's going to be patched
+(function(globalThis) {
+
+var irrelevant = (function (exports) {
+
+  /* eslint-disable no-prototype-builtins */
+  var g =
+    (typeof globalThis !== 'undefined' && globalThis) ||
+    (typeof self !== 'undefined' && self) ||
+    // eslint-disable-next-line no-undef
+    (typeof __webpack_require__.g !== 'undefined' && __webpack_require__.g) ||
+    {};
+
+  var support = {
+    searchParams: 'URLSearchParams' in g,
+    iterable: 'Symbol' in g && 'iterator' in Symbol,
+    blob:
+      'FileReader' in g &&
+      'Blob' in g &&
+      (function() {
+        try {
+          new Blob();
+          return true
+        } catch (e) {
+          return false
+        }
+      })(),
+    formData: 'FormData' in g,
+    arrayBuffer: 'ArrayBuffer' in g
+  };
+
+  function isDataView(obj) {
+    return obj && DataView.prototype.isPrototypeOf(obj)
+  }
+
+  if (support.arrayBuffer) {
+    var viewClasses = [
+      '[object Int8Array]',
+      '[object Uint8Array]',
+      '[object Uint8ClampedArray]',
+      '[object Int16Array]',
+      '[object Uint16Array]',
+      '[object Int32Array]',
+      '[object Uint32Array]',
+      '[object Float32Array]',
+      '[object Float64Array]'
+    ];
+
+    var isArrayBufferView =
+      ArrayBuffer.isView ||
+      function(obj) {
+        return obj && viewClasses.indexOf(Object.prototype.toString.call(obj)) > -1
+      };
+  }
+
+  function normalizeName(name) {
+    if (typeof name !== 'string') {
+      name = String(name);
+    }
+    if (/[^a-z0-9\-#$%&'*+.^_`|~!]/i.test(name) || name === '') {
+      throw new TypeError('Invalid character in header field name: "' + name + '"')
+    }
+    return name.toLowerCase()
+  }
+
+  function normalizeValue(value) {
+    if (typeof value !== 'string') {
+      value = String(value);
+    }
+    return value
+  }
+
+  // Build a destructive iterator for the value list
+  function iteratorFor(items) {
+    var iterator = {
+      next: function() {
+        var value = items.shift();
+        return {done: value === undefined, value: value}
+      }
+    };
+
+    if (support.iterable) {
+      iterator[Symbol.iterator] = function() {
+        return iterator
+      };
+    }
+
+    return iterator
+  }
+
+  function Headers(headers) {
+    this.map = {};
+
+    if (headers instanceof Headers) {
+      headers.forEach(function(value, name) {
+        this.append(name, value);
+      }, this);
+    } else if (Array.isArray(headers)) {
+      headers.forEach(function(header) {
+        if (header.length != 2) {
+          throw new TypeError('Headers constructor: expected name/value pair to be length 2, found' + header.length)
+        }
+        this.append(header[0], header[1]);
+      }, this);
+    } else if (headers) {
+      Object.getOwnPropertyNames(headers).forEach(function(name) {
+        this.append(name, headers[name]);
+      }, this);
+    }
+  }
+
+  Headers.prototype.append = function(name, value) {
+    name = normalizeName(name);
+    value = normalizeValue(value);
+    var oldValue = this.map[name];
+    this.map[name] = oldValue ? oldValue + ', ' + value : value;
+  };
+
+  Headers.prototype['delete'] = function(name) {
+    delete this.map[normalizeName(name)];
+  };
+
+  Headers.prototype.get = function(name) {
+    name = normalizeName(name);
+    return this.has(name) ? this.map[name] : null
+  };
+
+  Headers.prototype.has = function(name) {
+    return this.map.hasOwnProperty(normalizeName(name))
+  };
+
+  Headers.prototype.set = function(name, value) {
+    this.map[normalizeName(name)] = normalizeValue(value);
+  };
+
+  Headers.prototype.forEach = function(callback, thisArg) {
+    for (var name in this.map) {
+      if (this.map.hasOwnProperty(name)) {
+        callback.call(thisArg, this.map[name], name, this);
+      }
+    }
+  };
+
+  Headers.prototype.keys = function() {
+    var items = [];
+    this.forEach(function(value, name) {
+      items.push(name);
+    });
+    return iteratorFor(items)
+  };
+
+  Headers.prototype.values = function() {
+    var items = [];
+    this.forEach(function(value) {
+      items.push(value);
+    });
+    return iteratorFor(items)
+  };
+
+  Headers.prototype.entries = function() {
+    var items = [];
+    this.forEach(function(value, name) {
+      items.push([name, value]);
+    });
+    return iteratorFor(items)
+  };
+
+  if (support.iterable) {
+    Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
+  }
+
+  function consumed(body) {
+    if (body._noBody) return
+    if (body.bodyUsed) {
+      return Promise.reject(new TypeError('Already read'))
+    }
+    body.bodyUsed = true;
+  }
+
+  function fileReaderReady(reader) {
+    return new Promise(function(resolve, reject) {
+      reader.onload = function() {
+        resolve(reader.result);
+      };
+      reader.onerror = function() {
+        reject(reader.error);
+      };
+    })
+  }
+
+  function readBlobAsArrayBuffer(blob) {
+    var reader = new FileReader();
+    var promise = fileReaderReady(reader);
+    reader.readAsArrayBuffer(blob);
+    return promise
+  }
+
+  function readBlobAsText(blob) {
+    var reader = new FileReader();
+    var promise = fileReaderReady(reader);
+    var match = /charset=([A-Za-z0-9_-]+)/.exec(blob.type);
+    var encoding = match ? match[1] : 'utf-8';
+    reader.readAsText(blob, encoding);
+    return promise
+  }
+
+  function readArrayBufferAsText(buf) {
+    var view = new Uint8Array(buf);
+    var chars = new Array(view.length);
+
+    for (var i = 0; i < view.length; i++) {
+      chars[i] = String.fromCharCode(view[i]);
+    }
+    return chars.join('')
+  }
+
+  function bufferClone(buf) {
+    if (buf.slice) {
+      return buf.slice(0)
+    } else {
+      var view = new Uint8Array(buf.byteLength);
+      view.set(new Uint8Array(buf));
+      return view.buffer
+    }
+  }
+
+  function Body() {
+    this.bodyUsed = false;
+
+    this._initBody = function(body) {
+      /*
+        fetch-mock wraps the Response object in an ES6 Proxy to
+        provide useful test harness features such as flush. However, on
+        ES5 browsers without fetch or Proxy support pollyfills must be used;
+        the proxy-pollyfill is unable to proxy an attribute unless it exists
+        on the object before the Proxy is created. This change ensures
+        Response.bodyUsed exists on the instance, while maintaining the
+        semantic of setting Request.bodyUsed in the constructor before
+        _initBody is called.
+      */
+      // eslint-disable-next-line no-self-assign
+      this.bodyUsed = this.bodyUsed;
+      this._bodyInit = body;
+      if (!body) {
+        this._noBody = true;
+        this._bodyText = '';
+      } else if (typeof body === 'string') {
+        this._bodyText = body;
+      } else if (support.blob && Blob.prototype.isPrototypeOf(body)) {
+        this._bodyBlob = body;
+      } else if (support.formData && FormData.prototype.isPrototypeOf(body)) {
+        this._bodyFormData = body;
+      } else if (support.searchParams && URLSearchParams.prototype.isPrototypeOf(body)) {
+        this._bodyText = body.toString();
+      } else if (support.arrayBuffer && support.blob && isDataView(body)) {
+        this._bodyArrayBuffer = bufferClone(body.buffer);
+        // IE 10-11 can't handle a DataView body.
+        this._bodyInit = new Blob([this._bodyArrayBuffer]);
+      } else if (support.arrayBuffer && (ArrayBuffer.prototype.isPrototypeOf(body) || isArrayBufferView(body))) {
+        this._bodyArrayBuffer = bufferClone(body);
+      } else {
+        this._bodyText = body = Object.prototype.toString.call(body);
+      }
+
+      if (!this.headers.get('content-type')) {
+        if (typeof body === 'string') {
+          this.headers.set('content-type', 'text/plain;charset=UTF-8');
+        } else if (this._bodyBlob && this._bodyBlob.type) {
+          this.headers.set('content-type', this._bodyBlob.type);
+        } else if (support.searchParams && URLSearchParams.prototype.isPrototypeOf(body)) {
+          this.headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
+        }
+      }
+    };
+
+    if (support.blob) {
+      this.blob = function() {
+        var rejected = consumed(this);
+        if (rejected) {
+          return rejected
+        }
+
+        if (this._bodyBlob) {
+          return Promise.resolve(this._bodyBlob)
+        } else if (this._bodyArrayBuffer) {
+          return Promise.resolve(new Blob([this._bodyArrayBuffer]))
+        } else if (this._bodyFormData) {
+          throw new Error('could not read FormData body as blob')
+        } else {
+          return Promise.resolve(new Blob([this._bodyText]))
+        }
+      };
+    }
+
+    this.arrayBuffer = function() {
+      if (this._bodyArrayBuffer) {
+        var isConsumed = consumed(this);
+        if (isConsumed) {
+          return isConsumed
+        } else if (ArrayBuffer.isView(this._bodyArrayBuffer)) {
+          return Promise.resolve(
+            this._bodyArrayBuffer.buffer.slice(
+              this._bodyArrayBuffer.byteOffset,
+              this._bodyArrayBuffer.byteOffset + this._bodyArrayBuffer.byteLength
+            )
+          )
+        } else {
+          return Promise.resolve(this._bodyArrayBuffer)
+        }
+      } else if (support.blob) {
+        return this.blob().then(readBlobAsArrayBuffer)
+      } else {
+        throw new Error('could not read as ArrayBuffer')
+      }
+    };
+
+    this.text = function() {
+      var rejected = consumed(this);
+      if (rejected) {
+        return rejected
+      }
+
+      if (this._bodyBlob) {
+        return readBlobAsText(this._bodyBlob)
+      } else if (this._bodyArrayBuffer) {
+        return Promise.resolve(readArrayBufferAsText(this._bodyArrayBuffer))
+      } else if (this._bodyFormData) {
+        throw new Error('could not read FormData body as text')
+      } else {
+        return Promise.resolve(this._bodyText)
+      }
+    };
+
+    if (support.formData) {
+      this.formData = function() {
+        return this.text().then(decode)
+      };
+    }
+
+    this.json = function() {
+      return this.text().then(JSON.parse)
+    };
+
+    return this
+  }
+
+  // HTTP methods whose capitalization should be normalized
+  var methods = ['CONNECT', 'DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT', 'TRACE'];
+
+  function normalizeMethod(method) {
+    var upcased = method.toUpperCase();
+    return methods.indexOf(upcased) > -1 ? upcased : method
+  }
+
+  function Request(input, options) {
+    if (!(this instanceof Request)) {
+      throw new TypeError('Please use the "new" operator, this DOM object constructor cannot be called as a function.')
+    }
+
+    options = options || {};
+    var body = options.body;
+
+    if (input instanceof Request) {
+      if (input.bodyUsed) {
+        throw new TypeError('Already read')
+      }
+      this.url = input.url;
+      this.credentials = input.credentials;
+      if (!options.headers) {
+        this.headers = new Headers(input.headers);
+      }
+      this.method = input.method;
+      this.mode = input.mode;
+      this.signal = input.signal;
+      if (!body && input._bodyInit != null) {
+        body = input._bodyInit;
+        input.bodyUsed = true;
+      }
+    } else {
+      this.url = String(input);
+    }
+
+    this.credentials = options.credentials || this.credentials || 'same-origin';
+    if (options.headers || !this.headers) {
+      this.headers = new Headers(options.headers);
+    }
+    this.method = normalizeMethod(options.method || this.method || 'GET');
+    this.mode = options.mode || this.mode || null;
+    this.signal = options.signal || this.signal || (function () {
+      if ('AbortController' in g) {
+        var ctrl = new AbortController();
+        return ctrl.signal;
+      }
+    }());
+    this.referrer = null;
+
+    if ((this.method === 'GET' || this.method === 'HEAD') && body) {
+      throw new TypeError('Body not allowed for GET or HEAD requests')
+    }
+    this._initBody(body);
+
+    if (this.method === 'GET' || this.method === 'HEAD') {
+      if (options.cache === 'no-store' || options.cache === 'no-cache') {
+        // Search for a '_' parameter in the query string
+        var reParamSearch = /([?&])_=[^&]*/;
+        if (reParamSearch.test(this.url)) {
+          // If it already exists then set the value with the current time
+          this.url = this.url.replace(reParamSearch, '$1_=' + new Date().getTime());
+        } else {
+          // Otherwise add a new '_' parameter to the end with the current time
+          var reQueryString = /\?/;
+          this.url += (reQueryString.test(this.url) ? '&' : '?') + '_=' + new Date().getTime();
+        }
+      }
+    }
+  }
+
+  Request.prototype.clone = function() {
+    return new Request(this, {body: this._bodyInit})
+  };
+
+  function decode(body) {
+    var form = new FormData();
+    body
+      .trim()
+      .split('&')
+      .forEach(function(bytes) {
+        if (bytes) {
+          var split = bytes.split('=');
+          var name = split.shift().replace(/\+/g, ' ');
+          var value = split.join('=').replace(/\+/g, ' ');
+          form.append(decodeURIComponent(name), decodeURIComponent(value));
+        }
+      });
+    return form
+  }
+
+  function parseHeaders(rawHeaders) {
+    var headers = new Headers();
+    // Replace instances of \r\n and \n followed by at least one space or horizontal tab with a space
+    // https://tools.ietf.org/html/rfc7230#section-3.2
+    var preProcessedHeaders = rawHeaders.replace(/\r?\n[\t ]+/g, ' ');
+    // Avoiding split via regex to work around a common IE11 bug with the core-js 3.6.0 regex polyfill
+    // https://github.com/github/fetch/issues/748
+    // https://github.com/zloirock/core-js/issues/751
+    preProcessedHeaders
+      .split('\r')
+      .map(function(header) {
+        return header.indexOf('\n') === 0 ? header.substr(1, header.length) : header
+      })
+      .forEach(function(line) {
+        var parts = line.split(':');
+        var key = parts.shift().trim();
+        if (key) {
+          var value = parts.join(':').trim();
+          try {
+            headers.append(key, value);
+          } catch (error) {
+            console.warn('Response ' + error.message);
+          }
+        }
+      });
+    return headers
+  }
+
+  Body.call(Request.prototype);
+
+  function Response(bodyInit, options) {
+    if (!(this instanceof Response)) {
+      throw new TypeError('Please use the "new" operator, this DOM object constructor cannot be called as a function.')
+    }
+    if (!options) {
+      options = {};
+    }
+
+    this.type = 'default';
+    this.status = options.status === undefined ? 200 : options.status;
+    if (this.status < 200 || this.status > 599) {
+      throw new RangeError("Failed to construct 'Response': The status provided (0) is outside the range [200, 599].")
+    }
+    this.ok = this.status >= 200 && this.status < 300;
+    this.statusText = options.statusText === undefined ? '' : '' + options.statusText;
+    this.headers = new Headers(options.headers);
+    this.url = options.url || '';
+    this._initBody(bodyInit);
+  }
+
+  Body.call(Response.prototype);
+
+  Response.prototype.clone = function() {
+    return new Response(this._bodyInit, {
+      status: this.status,
+      statusText: this.statusText,
+      headers: new Headers(this.headers),
+      url: this.url
+    })
+  };
+
+  Response.error = function() {
+    var response = new Response(null, {status: 200, statusText: ''});
+    response.ok = false;
+    response.status = 0;
+    response.type = 'error';
+    return response
+  };
+
+  var redirectStatuses = [301, 302, 303, 307, 308];
+
+  Response.redirect = function(url, status) {
+    if (redirectStatuses.indexOf(status) === -1) {
+      throw new RangeError('Invalid status code')
+    }
+
+    return new Response(null, {status: status, headers: {location: url}})
+  };
+
+  exports.DOMException = g.DOMException;
+  try {
+    new exports.DOMException();
+  } catch (err) {
+    exports.DOMException = function(message, name) {
+      this.message = message;
+      this.name = name;
+      var error = Error(message);
+      this.stack = error.stack;
+    };
+    exports.DOMException.prototype = Object.create(Error.prototype);
+    exports.DOMException.prototype.constructor = exports.DOMException;
+  }
+
+  function fetch(input, init) {
+    return new Promise(function(resolve, reject) {
+      var request = new Request(input, init);
+
+      if (request.signal && request.signal.aborted) {
+        return reject(new exports.DOMException('Aborted', 'AbortError'))
+      }
+
+      var xhr = new XMLHttpRequest();
+
+      function abortXhr() {
+        xhr.abort();
+      }
+
+      xhr.onload = function() {
+        var options = {
+          statusText: xhr.statusText,
+          headers: parseHeaders(xhr.getAllResponseHeaders() || '')
+        };
+        // This check if specifically for when a user fetches a file locally from the file system
+        // Only if the status is out of a normal range
+        if (request.url.indexOf('file://') === 0 && (xhr.status < 200 || xhr.status > 599)) {
+          options.status = 200;
+        } else {
+          options.status = xhr.status;
+        }
+        options.url = 'responseURL' in xhr ? xhr.responseURL : options.headers.get('X-Request-URL');
+        var body = 'response' in xhr ? xhr.response : xhr.responseText;
+        setTimeout(function() {
+          resolve(new Response(body, options));
+        }, 0);
+      };
+
+      xhr.onerror = function() {
+        setTimeout(function() {
+          reject(new TypeError('Network request failed'));
+        }, 0);
+      };
+
+      xhr.ontimeout = function() {
+        setTimeout(function() {
+          reject(new TypeError('Network request timed out'));
+        }, 0);
+      };
+
+      xhr.onabort = function() {
+        setTimeout(function() {
+          reject(new exports.DOMException('Aborted', 'AbortError'));
+        }, 0);
+      };
+
+      function fixUrl(url) {
+        try {
+          return url === '' && g.location.href ? g.location.href : url
+        } catch (e) {
+          return url
+        }
+      }
+
+      xhr.open(request.method, fixUrl(request.url), true);
+
+      if (request.credentials === 'include') {
+        xhr.withCredentials = true;
+      } else if (request.credentials === 'omit') {
+        xhr.withCredentials = false;
+      }
+
+      if ('responseType' in xhr) {
+        if (support.blob) {
+          xhr.responseType = 'blob';
+        } else if (
+          support.arrayBuffer
+        ) {
+          xhr.responseType = 'arraybuffer';
+        }
+      }
+
+      if (init && typeof init.headers === 'object' && !(init.headers instanceof Headers || (g.Headers && init.headers instanceof g.Headers))) {
+        var names = [];
+        Object.getOwnPropertyNames(init.headers).forEach(function(name) {
+          names.push(normalizeName(name));
+          xhr.setRequestHeader(name, normalizeValue(init.headers[name]));
+        });
+        request.headers.forEach(function(value, name) {
+          if (names.indexOf(name) === -1) {
+            xhr.setRequestHeader(name, value);
+          }
+        });
+      } else {
+        request.headers.forEach(function(value, name) {
+          xhr.setRequestHeader(name, value);
+        });
+      }
+
+      if (request.signal) {
+        request.signal.addEventListener('abort', abortXhr);
+
+        xhr.onreadystatechange = function() {
+          // DONE (success or failure)
+          if (xhr.readyState === 4) {
+            request.signal.removeEventListener('abort', abortXhr);
+          }
+        };
+      }
+
+      xhr.send(typeof request._bodyInit === 'undefined' ? null : request._bodyInit);
+    })
+  }
+
+  fetch.polyfill = true;
+
+  if (!g.fetch) {
+    g.fetch = fetch;
+    g.Headers = Headers;
+    g.Request = Request;
+    g.Response = Response;
+  }
+
+  exports.Headers = Headers;
+  exports.Request = Request;
+  exports.Response = Response;
+  exports.fetch = fetch;
+
+  return exports;
+
+})({});
+})(__globalThis__);
+// This is a ponyfill, so...
+__globalThis__.fetch.ponyfill = true;
+delete __globalThis__.fetch.polyfill;
+// Choose between native implementation (__global__) or custom implementation (__globalThis__)
+var ctx = __global__.fetch ? __global__ : __globalThis__;
+exports = ctx.fetch // To enable: import fetch from 'cross-fetch'
+exports["default"] = ctx.fetch // For TypeScript consumers without esModuleInterop.
+exports.fetch = ctx.fetch // To enable: import {fetch} from 'cross-fetch'
+exports.Headers = ctx.Headers
+exports.Request = ctx.Request
+exports.Response = ctx.Response
+module.exports = exports
 
 
 /***/ }),
@@ -45368,6 +52106,651 @@ var Metadata;
 
 /***/ }),
 
+/***/ "./node_modules/isomorphic-webcrypto/src/browser.mjs":
+/*!***********************************************************!*\
+  !*** ./node_modules/isomorphic-webcrypto/src/browser.mjs ***!
+  \***********************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   "default": () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+/* harmony import */ var _webcrypto_shim_mjs__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./webcrypto-shim.mjs */ "./node_modules/isomorphic-webcrypto/src/webcrypto-shim.mjs");
+
+/* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (window.crypto);
+
+
+/***/ }),
+
+/***/ "./node_modules/isomorphic-webcrypto/src/webcrypto-shim.mjs":
+/*!******************************************************************!*\
+  !*** ./node_modules/isomorphic-webcrypto/src/webcrypto-shim.mjs ***!
+  \******************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   "default": () => (__WEBPACK_DEFAULT_EXPORT__)
+/* harmony export */ });
+/**
+ * @file Web Cryptography API shim
+ * @author Artem S Vybornov <vybornov@gmail.com>
+ * @license MIT
+ */
+(function (global, factory) {
+    if (typeof define === 'function' && define.amd) {
+        // AMD. Register as an anonymous module.
+        define([], function () {
+            return factory(global);
+        });
+    } else if (typeof module === 'object' && module.exports) {
+        // CommonJS-like environments that support module.exports
+        module.exports = factory(global);
+    } else {
+        factory(global);
+    }
+}(typeof self !== 'undefined' ? self : undefined, function (global) {
+    'use strict';
+
+    if ( typeof Promise !== 'function' )
+        throw "Promise support required";
+
+    var _crypto = global.crypto || global.msCrypto;
+    if ( !_crypto ) return;
+
+    var _subtle = _crypto.subtle || _crypto.webkitSubtle;
+    if ( !_subtle ) return;
+
+    var _Crypto     = global.Crypto || _crypto.constructor || Object,
+        _SubtleCrypto = global.SubtleCrypto || _subtle.constructor || Object,
+        _CryptoKey  = global.CryptoKey || global.Key || Object;
+
+    var isEdge = global.navigator.userAgent.indexOf('Edge/') > -1;
+    var isIE    = !!global.msCrypto && !isEdge;
+    var isWebkit = !_crypto.subtle && !!_crypto.webkitSubtle;
+    if ( !isIE && !isWebkit ) return;
+
+    function s2a ( s ) {
+        return btoa(s).replace(/\=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    }
+
+    function a2s ( s ) {
+        s += '===', s = s.slice( 0, -s.length % 4 );
+        return atob( s.replace(/-/g, '+').replace(/_/g, '/') );
+    }
+
+    function s2b ( s ) {
+        var b = new Uint8Array(s.length);
+        for ( var i = 0; i < s.length; i++ ) b[i] = s.charCodeAt(i);
+        return b;
+    }
+
+    function b2s ( b ) {
+        if ( b instanceof ArrayBuffer ) b = new Uint8Array(b);
+        return String.fromCharCode.apply( String, b );
+    }
+
+    function alg ( a ) {
+        var r = { 'name': (a.name || a || '').toUpperCase().replace('V','v') };
+        switch ( r.name ) {
+            case 'SHA-1':
+            case 'SHA-256':
+            case 'SHA-384':
+            case 'SHA-512':
+                break;
+            case 'AES-CBC':
+            case 'AES-GCM':
+            case 'AES-KW':
+                if ( a.length ) r['length'] = a.length;
+                break;
+            case 'HMAC':
+                if ( a.hash ) r['hash'] = alg(a.hash);
+                if ( a.length ) r['length'] = a.length;
+                break;
+            case 'RSAES-PKCS1-v1_5':
+                if ( a.publicExponent ) r['publicExponent'] = new Uint8Array(a.publicExponent);
+                if ( a.modulusLength ) r['modulusLength'] = a.modulusLength;
+                break;
+            case 'RSASSA-PKCS1-v1_5':
+            case 'RSA-OAEP':
+                if ( a.hash ) r['hash'] = alg(a.hash);
+                if ( a.publicExponent ) r['publicExponent'] = new Uint8Array(a.publicExponent);
+                if ( a.modulusLength ) r['modulusLength'] = a.modulusLength;
+                break;
+            default:
+                throw new SyntaxError("Bad algorithm name");
+        }
+        return r;
+    };
+
+    function jwkAlg ( a ) {
+        return {
+            'HMAC': {
+                'SHA-1': 'HS1',
+                'SHA-256': 'HS256',
+                'SHA-384': 'HS384',
+                'SHA-512': 'HS512',
+            },
+            'RSASSA-PKCS1-v1_5': {
+                'SHA-1': 'RS1',
+                'SHA-256': 'RS256',
+                'SHA-384': 'RS384',
+                'SHA-512': 'RS512',
+            },
+            'RSAES-PKCS1-v1_5': {
+                '': 'RSA1_5',
+            },
+            'RSA-OAEP': {
+                'SHA-1': 'RSA-OAEP',
+                'SHA-256': 'RSA-OAEP-256',
+            },
+            'AES-KW': {
+                '128': 'A128KW',
+                '192': 'A192KW',
+                '256': 'A256KW',
+            },
+            'AES-GCM': {
+                '128': 'A128GCM',
+                '192': 'A192GCM',
+                '256': 'A256GCM',
+            },
+            'AES-CBC': {
+                '128': 'A128CBC',
+                '192': 'A192CBC',
+                '256': 'A256CBC',
+            },
+        }[a.name][ ( a.hash || {} ).name || a.length || '' ];
+    }
+
+    function b2jwk ( k ) {
+        if ( k instanceof ArrayBuffer || k instanceof Uint8Array ) k = JSON.parse( decodeURIComponent( escape( b2s(k) ) ) );
+        var jwk = { 'kty': k.kty, 'alg': k.alg, 'ext': k.ext || k.extractable };
+        switch ( jwk.kty ) {
+            case 'oct':
+                jwk.k = k.k;
+            case 'RSA':
+                [ 'n', 'e', 'd', 'p', 'q', 'dp', 'dq', 'qi', 'oth' ].forEach( function ( x ) { if ( x in k ) jwk[x] = k[x] } );
+                break;
+            default:
+                throw new TypeError("Unsupported key type");
+        }
+        return jwk;
+    }
+
+    function jwk2b ( k ) {
+        var jwk = b2jwk(k);
+        if ( isIE ) jwk['extractable'] = jwk.ext, delete jwk.ext;
+        return s2b( unescape( encodeURIComponent( JSON.stringify(jwk) ) ) ).buffer;
+    }
+
+    function pkcs2jwk ( k ) {
+        var info = b2der(k), prv = false;
+        if ( info.length > 2 ) prv = true, info.shift(); // remove version from PKCS#8 PrivateKeyInfo structure
+        var jwk = { 'ext': true };
+        switch ( info[0][0] ) {
+            case '1.2.840.113549.1.1.1':
+                var rsaComp = [ 'n', 'e', 'd', 'p', 'q', 'dp', 'dq', 'qi' ],
+                    rsaKey  = b2der( info[1] );
+                if ( prv ) rsaKey.shift(); // remove version from PKCS#1 RSAPrivateKey structure
+                for ( var i = 0; i < rsaKey.length; i++ ) {
+                    if ( !rsaKey[i][0] ) rsaKey[i] = rsaKey[i].subarray(1);
+                    jwk[ rsaComp[i] ] = s2a( b2s( rsaKey[i] ) );
+                }
+                jwk['kty'] = 'RSA';
+                break;
+            default:
+                throw new TypeError("Unsupported key type");
+        }
+        return jwk;
+    }
+
+    function jwk2pkcs ( k ) {
+        var key, info = [ [ '', null ] ], prv = false;
+        switch ( k.kty ) {
+            case 'RSA':
+                var rsaComp = [ 'n', 'e', 'd', 'p', 'q', 'dp', 'dq', 'qi' ],
+                    rsaKey = [];
+                for ( var i = 0; i < rsaComp.length; i++ ) {
+                    if ( !( rsaComp[i] in k ) ) break;
+                    var b = rsaKey[i] = s2b( a2s( k[ rsaComp[i] ] ) );
+                    if ( b[0] & 0x80 ) rsaKey[i] = new Uint8Array(b.length + 1), rsaKey[i].set( b, 1 );
+                }
+                if ( rsaKey.length > 2 ) prv = true, rsaKey.unshift( new Uint8Array([0]) ); // add version to PKCS#1 RSAPrivateKey structure
+                info[0][0] = '1.2.840.113549.1.1.1';
+                key = rsaKey;
+                break;
+            default:
+                throw new TypeError("Unsupported key type");
+        }
+        info.push( new Uint8Array( der2b(key) ).buffer );
+        if ( !prv ) info[1] = { 'tag': 0x03, 'value': info[1] };
+        else info.unshift( new Uint8Array([0]) ); // add version to PKCS#8 PrivateKeyInfo structure
+        return new Uint8Array( der2b(info) ).buffer;
+    }
+
+    var oid2str = { 'KoZIhvcNAQEB': '1.2.840.113549.1.1.1' },
+        str2oid = { '1.2.840.113549.1.1.1': 'KoZIhvcNAQEB' };
+
+    function b2der ( buf, ctx ) {
+        if ( buf instanceof ArrayBuffer ) buf = new Uint8Array(buf);
+        if ( !ctx ) ctx = { pos: 0, end: buf.length };
+
+        if ( ctx.end - ctx.pos < 2 || ctx.end > buf.length ) throw new RangeError("Malformed DER");
+
+        var tag = buf[ctx.pos++],
+            len = buf[ctx.pos++];
+
+        if ( len >= 0x80 ) {
+            len &= 0x7f;
+            if ( ctx.end - ctx.pos < len ) throw new RangeError("Malformed DER");
+            for ( var xlen = 0; len--; ) xlen <<= 8, xlen |= buf[ctx.pos++];
+            len = xlen;
+        }
+
+        if ( ctx.end - ctx.pos < len ) throw new RangeError("Malformed DER");
+
+        var rv;
+
+        switch ( tag ) {
+            case 0x02: // Universal Primitive INTEGER
+                rv = buf.subarray( ctx.pos, ctx.pos += len );
+                break;
+            case 0x03: // Universal Primitive BIT STRING
+                if ( buf[ctx.pos++] ) throw new Error( "Unsupported bit string" );
+                len--;
+            case 0x04: // Universal Primitive OCTET STRING
+                rv = new Uint8Array( buf.subarray( ctx.pos, ctx.pos += len ) ).buffer;
+                break;
+            case 0x05: // Universal Primitive NULL
+                rv = null;
+                break;
+            case 0x06: // Universal Primitive OBJECT IDENTIFIER
+                var oid = btoa( b2s( buf.subarray( ctx.pos, ctx.pos += len ) ) );
+                if ( !( oid in oid2str ) ) throw new Error( "Unsupported OBJECT ID " + oid );
+                rv = oid2str[oid];
+                break;
+            case 0x30: // Universal Constructed SEQUENCE
+                rv = [];
+                for ( var end = ctx.pos + len; ctx.pos < end; ) rv.push( b2der( buf, ctx ) );
+                break;
+            default:
+                throw new Error( "Unsupported DER tag 0x" + tag.toString(16) );
+        }
+
+        return rv;
+    }
+
+    function der2b ( val, buf ) {
+        if ( !buf ) buf = [];
+
+        var tag = 0, len = 0,
+            pos = buf.length + 2;
+
+        buf.push( 0, 0 ); // placeholder
+
+        if ( val instanceof Uint8Array ) {  // Universal Primitive INTEGER
+            tag = 0x02, len = val.length;
+            for ( var i = 0; i < len; i++ ) buf.push( val[i] );
+        }
+        else if ( val instanceof ArrayBuffer ) { // Universal Primitive OCTET STRING
+            tag = 0x04, len = val.byteLength, val = new Uint8Array(val);
+            for ( var i = 0; i < len; i++ ) buf.push( val[i] );
+        }
+        else if ( val === null ) { // Universal Primitive NULL
+            tag = 0x05, len = 0;
+        }
+        else if ( typeof val === 'string' && val in str2oid ) { // Universal Primitive OBJECT IDENTIFIER
+            var oid = s2b( atob( str2oid[val] ) );
+            tag = 0x06, len = oid.length;
+            for ( var i = 0; i < len; i++ ) buf.push( oid[i] );
+        }
+        else if ( val instanceof Array ) { // Universal Constructed SEQUENCE
+            for ( var i = 0; i < val.length; i++ ) der2b( val[i], buf );
+            tag = 0x30, len = buf.length - pos;
+        }
+        else if ( typeof val === 'object' && val.tag === 0x03 && val.value instanceof ArrayBuffer ) { // Tag hint
+            val = new Uint8Array(val.value), tag = 0x03, len = val.byteLength;
+            buf.push(0); for ( var i = 0; i < len; i++ ) buf.push( val[i] );
+            len++;
+        }
+        else {
+            throw new Error( "Unsupported DER value " + val );
+        }
+
+        if ( len >= 0x80 ) {
+            var xlen = len, len = 4;
+            buf.splice( pos, 0, (xlen >> 24) & 0xff, (xlen >> 16) & 0xff, (xlen >> 8) & 0xff, xlen & 0xff );
+            while ( len > 1 && !(xlen >> 24) ) xlen <<= 8, len--;
+            if ( len < 4 ) buf.splice( pos, 4 - len );
+            len |= 0x80;
+        }
+
+        buf.splice( pos - 2, 2, tag, len );
+
+        return buf;
+    }
+
+    function CryptoKey ( key, alg, ext, use ) {
+        Object.defineProperties( this, {
+            _key: {
+                value: key
+            },
+            type: {
+                value: key.type,
+                enumerable: true,
+            },
+            extractable: {
+                value: (ext === undefined) ? key.extractable : ext,
+                enumerable: true,
+            },
+            algorithm: {
+                value: (alg === undefined) ? key.algorithm : alg,
+                enumerable: true,
+            },
+            usages: {
+                value: (use === undefined) ? key.usages : use,
+                enumerable: true,
+            },
+        });
+    }
+
+    function isPubKeyUse ( u ) {
+        return u === 'verify' || u === 'encrypt' || u === 'wrapKey';
+    }
+
+    function isPrvKeyUse ( u ) {
+        return u === 'sign' || u === 'decrypt' || u === 'unwrapKey';
+    }
+
+    [ 'generateKey', 'importKey', 'unwrapKey' ]
+        .forEach( function ( m ) {
+            var _fn = _subtle[m];
+
+            _subtle[m] = function ( a, b, c ) {
+                var args = [].slice.call(arguments),
+                    ka, kx, ku;
+
+                switch ( m ) {
+                    case 'generateKey':
+                        ka = alg(a), kx = b, ku = c;
+                        break;
+                    case 'importKey':
+                        ka = alg(c), kx = args[3], ku = args[4];
+                        if ( a === 'jwk' ) {
+                            b = b2jwk(b);
+                            if ( !b.alg ) b.alg = jwkAlg(ka);
+                            if ( !b.key_ops ) b.key_ops = ( b.kty !== 'oct' ) ? ( 'd' in b ) ? ku.filter(isPrvKeyUse) : ku.filter(isPubKeyUse) : ku.slice();
+                            args[1] = jwk2b(b);
+                        }
+                        break;
+                    case 'unwrapKey':
+                        ka = args[4], kx = args[5], ku = args[6];
+                        args[2] = c._key;
+                        break;
+                }
+
+                if ( m === 'generateKey' && ka.name === 'HMAC' && ka.hash ) {
+                    ka.length = ka.length || { 'SHA-1': 512, 'SHA-256': 512, 'SHA-384': 1024, 'SHA-512': 1024 }[ka.hash.name];
+                    return _subtle.importKey( 'raw', _crypto.getRandomValues( new Uint8Array( (ka.length+7)>>3 ) ), ka, kx, ku );
+                }
+
+                if ( isWebkit && m === 'generateKey' && ka.name === 'RSASSA-PKCS1-v1_5' && ( !ka.modulusLength || ka.modulusLength >= 2048 ) ) {
+                    a = alg(a), a.name = 'RSAES-PKCS1-v1_5', delete a.hash;
+                    return _subtle.generateKey( a, true, [ 'encrypt', 'decrypt' ] )
+                        .then( function ( k ) {
+                            return Promise.all([
+                                _subtle.exportKey( 'jwk', k.publicKey ),
+                                _subtle.exportKey( 'jwk', k.privateKey ),
+                            ]);
+                        })
+                        .then( function ( keys ) {
+                            keys[0].alg = keys[1].alg = jwkAlg(ka);
+                            keys[0].key_ops = ku.filter(isPubKeyUse), keys[1].key_ops = ku.filter(isPrvKeyUse);
+                            return Promise.all([
+                                _subtle.importKey( 'jwk', keys[0], ka, true, keys[0].key_ops ),
+                                _subtle.importKey( 'jwk', keys[1], ka, kx, keys[1].key_ops ),
+                            ]);
+                        })
+                        .then( function ( keys ) {
+                            return {
+                                publicKey: keys[0],
+                                privateKey: keys[1],
+                            };
+                        });
+                }
+
+                if ( ( isWebkit || ( isIE && ( ka.hash || {} ).name === 'SHA-1' ) )
+                        && m === 'importKey' && a === 'jwk' && ka.name === 'HMAC' && b.kty === 'oct' ) {
+                    return _subtle.importKey( 'raw', s2b( a2s(b.k) ), c, args[3], args[4] );
+                }
+
+                if ( isWebkit && m === 'importKey' && ( a === 'spki' || a === 'pkcs8' ) ) {
+                    return _subtle.importKey( 'jwk', pkcs2jwk(b), c, args[3], args[4] );
+                }
+
+                if ( isIE && m === 'unwrapKey' ) {
+                    return _subtle.decrypt( args[3], c, b )
+                        .then( function ( k ) {
+                            return _subtle.importKey( a, k, args[4], args[5], args[6] );
+                        });
+                }
+
+                var op;
+                try {
+                    op = _fn.apply( _subtle, args );
+                }
+                catch ( e ) {
+                    return Promise.reject(e);
+                }
+
+                if ( isIE ) {
+                    op = new Promise( function ( res, rej ) {
+                        op.onabort =
+                        op.onerror =    function ( e ) { rej(e)               };
+                        op.oncomplete = function ( r ) { res(r.target.result) };
+                    });
+                }
+
+                op = op.then( function ( k ) {
+                    if ( ka.name === 'HMAC' ) {
+                        if ( !ka.length ) ka.length = 8 * k.algorithm.length;
+                    }
+                    if ( ka.name.search('RSA') == 0 ) {
+                        if ( !ka.modulusLength ) ka.modulusLength = (k.publicKey || k).algorithm.modulusLength;
+                        if ( !ka.publicExponent ) ka.publicExponent = (k.publicKey || k).algorithm.publicExponent;
+                    }
+                    if ( k.publicKey && k.privateKey ) {
+                        k = {
+                            publicKey: new CryptoKey( k.publicKey, ka, kx, ku.filter(isPubKeyUse) ),
+                            privateKey: new CryptoKey( k.privateKey, ka, kx, ku.filter(isPrvKeyUse) ),
+                        };
+                    }
+                    else {
+                        k = new CryptoKey( k, ka, kx, ku );
+                    }
+                    return k;
+                });
+
+                return op;
+            }
+        });
+
+    [ 'exportKey', 'wrapKey' ]
+        .forEach( function ( m ) {
+            var _fn = _subtle[m];
+
+            _subtle[m] = function ( a, b, c ) {
+                var args = [].slice.call(arguments);
+
+                switch ( m ) {
+                    case 'exportKey':
+                        args[1] = b._key;
+                        break;
+                    case 'wrapKey':
+                        args[1] = b._key, args[2] = c._key;
+                        break;
+                }
+
+                if ( ( isWebkit || ( isIE && ( b.algorithm.hash || {} ).name === 'SHA-1' ) )
+                        && m === 'exportKey' && a === 'jwk' && b.algorithm.name === 'HMAC' ) {
+                    args[0] = 'raw';
+                }
+
+                if ( isWebkit && m === 'exportKey' && ( a === 'spki' || a === 'pkcs8' ) ) {
+                    args[0] = 'jwk';
+                }
+
+                if ( isIE && m === 'wrapKey' ) {
+                    return _subtle.exportKey( a, b )
+                        .then( function ( k ) {
+                            if ( a === 'jwk' ) k = s2b( unescape( encodeURIComponent( JSON.stringify( b2jwk(k) ) ) ) );
+                            return  _subtle.encrypt( args[3], c, k );
+                        });
+                }
+
+                var op;
+                try {
+                    op = _fn.apply( _subtle, args );
+                }
+                catch ( e ) {
+                    return Promise.reject(e);
+                }
+
+                if ( isIE ) {
+                    op = new Promise( function ( res, rej ) {
+                        op.onabort =
+                        op.onerror =    function ( e ) { rej(e)               };
+                        op.oncomplete = function ( r ) { res(r.target.result) };
+                    });
+                }
+
+                if ( m === 'exportKey' && a === 'jwk' ) {
+                    op = op.then( function ( k ) {
+                        if ( ( isWebkit || ( isIE && ( b.algorithm.hash || {} ).name === 'SHA-1' ) )
+                                && b.algorithm.name === 'HMAC') {
+                            return { 'kty': 'oct', 'alg': jwkAlg(b.algorithm), 'key_ops': b.usages.slice(), 'ext': true, 'k': s2a( b2s(k) ) };
+                        }
+                        k = b2jwk(k);
+                        if ( !k.alg ) k['alg'] = jwkAlg(b.algorithm);
+                        if ( !k.key_ops ) k['key_ops'] = ( b.type === 'public' ) ? b.usages.filter(isPubKeyUse) : ( b.type === 'private' ) ? b.usages.filter(isPrvKeyUse) : b.usages.slice();
+                        return k;
+                    });
+                }
+
+                if ( isWebkit && m === 'exportKey' && ( a === 'spki' || a === 'pkcs8' ) ) {
+                    op = op.then( function ( k ) {
+                        k = jwk2pkcs( b2jwk(k) );
+                        return k;
+                    });
+                }
+
+                return op;
+            }
+        });
+
+    [ 'encrypt', 'decrypt', 'sign', 'verify' ]
+        .forEach( function ( m ) {
+            var _fn = _subtle[m];
+
+            _subtle[m] = function ( a, b, c, d ) {
+                if ( isIE && ( !c.byteLength || ( d && !d.byteLength ) ) )
+                    throw new Error("Empy input is not allowed");
+
+                var args = [].slice.call(arguments),
+                    ka = alg(a);
+
+                if ( isIE && m === 'decrypt' && ka.name === 'AES-GCM' ) {
+                    var tl = a.tagLength >> 3;
+                    args[2] = (c.buffer || c).slice( 0, c.byteLength - tl ),
+                    a.tag = (c.buffer || c).slice( c.byteLength - tl );
+                }
+
+                args[1] = b._key;
+
+                var op;
+                try {
+                    op = _fn.apply( _subtle, args );
+                }
+                catch ( e ) {
+                    return Promise.reject(e);
+                }
+
+                if ( isIE ) {
+                    op = new Promise( function ( res, rej ) {
+                        op.onabort =
+                        op.onerror = function ( e ) {
+                            rej(e);
+                        };
+
+                        op.oncomplete = function ( r ) {
+                            var r = r.target.result;
+
+                            if ( m === 'encrypt' && r instanceof AesGcmEncryptResult ) {
+                                var c = r.ciphertext, t = r.tag;
+                                r = new Uint8Array( c.byteLength + t.byteLength );
+                                r.set( new Uint8Array(c), 0 );
+                                r.set( new Uint8Array(t), c.byteLength );
+                                r = r.buffer;
+                            }
+
+                            res(r);
+                        };
+                    });
+                }
+
+                return op;
+            }
+        });
+
+    if ( isIE ) {
+        var _digest = _subtle.digest;
+
+        _subtle['digest'] = function ( a, b ) {
+            if ( !b.byteLength )
+                throw new Error("Empy input is not allowed");
+
+            var op;
+            try {
+                op = _digest.call( _subtle, a, b );
+            }
+            catch ( e ) {
+                return Promise.reject(e);
+            }
+
+            op = new Promise( function ( res, rej ) {
+                op.onabort =
+                op.onerror =    function ( e ) { rej(e)               };
+                op.oncomplete = function ( r ) { res(r.target.result) };
+            });
+
+            return op;
+        };
+
+        global.crypto = Object.create( _crypto, {
+            getRandomValues: { value: function ( a ) { return _crypto.getRandomValues(a) } },
+            subtle:          { value: _subtle },
+        });
+
+        global.CryptoKey = CryptoKey;
+    }
+
+    if ( isWebkit ) {
+        _crypto.subtle = _subtle;
+
+        global.Crypto = _Crypto;
+        global.SubtleCrypto = _SubtleCrypto;
+        global.CryptoKey = CryptoKey;
+    }
+}));
+
+ /* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = ({}); // section modified by isomorphic-webcrypto build 
+
+
+/***/ }),
+
 /***/ "./node_modules/lodash.get/index.js":
 /*!******************************************!*\
   !*** ./node_modules/lodash.get/index.js ***!
@@ -63548,6 +70931,261 @@ module.exports["default"] = exports.default;
 
 /***/ }),
 
+/***/ "./node_modules/web-did-resolver/lib/resolver.module.js":
+/*!**************************************************************!*\
+  !*** ./node_modules/web-did-resolver/lib/resolver.module.js ***!
+  \**************************************************************/
+/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   getResolver: () => (/* binding */ getResolver)
+/* harmony export */ });
+/* harmony import */ var cross_fetch__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! cross-fetch */ "./node_modules/cross-fetch/dist/browser-ponyfill.js");
+
+
+function _catch(body, recover) {
+  try {
+    var result = body();
+  } catch (e) {
+    return recover(e);
+  }
+  if (result && result.then) {
+    return result.then(void 0, recover);
+  }
+  return result;
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const get = function (url) {
+  try {
+    return Promise.resolve(cross_fetch__WEBPACK_IMPORTED_MODULE_0__(url, {
+      mode: 'cors'
+    })).then(function (res) {
+      if (res.status >= 400) {
+        throw new Error(`Bad response ${res.statusText}`);
+      }
+      return res.json();
+    });
+  } catch (e) {
+    return Promise.reject(e);
+  }
+};
+function _settle(pact, state, value) {
+  if (!pact.s) {
+    if (value instanceof _Pact) {
+      if (value.s) {
+        if (state & 1) {
+          state = value.s;
+        }
+        value = value.v;
+      } else {
+        value.o = _settle.bind(null, pact, state);
+        return;
+      }
+    }
+    if (value && value.then) {
+      value.then(_settle.bind(null, pact, state), _settle.bind(null, pact, 2));
+      return;
+    }
+    pact.s = state;
+    pact.v = value;
+    const observer = pact.o;
+    if (observer) {
+      observer(pact);
+    }
+  }
+}
+const DOC_PATH = '/.well-known/did.json';
+const _Pact = /*#__PURE__*/function () {
+  function _Pact() {}
+  _Pact.prototype.then = function (onFulfilled, onRejected) {
+    const result = new _Pact();
+    const state = this.s;
+    if (state) {
+      const callback = state & 1 ? onFulfilled : onRejected;
+      if (callback) {
+        try {
+          _settle(result, 1, callback(this.v));
+        } catch (e) {
+          _settle(result, 2, e);
+        }
+        return result;
+      } else {
+        return this;
+      }
+    }
+    this.o = function (_this) {
+      try {
+        const value = _this.v;
+        if (_this.s & 1) {
+          _settle(result, 1, onFulfilled ? onFulfilled(value) : value);
+        } else if (onRejected) {
+          _settle(result, 1, onRejected(value));
+        } else {
+          _settle(result, 2, value);
+        }
+      } catch (e) {
+        _settle(result, 2, e);
+      }
+    };
+    return result;
+  };
+  return _Pact;
+}();
+function _isSettledPact(thenable) {
+  return thenable instanceof _Pact && thenable.s & 1;
+}
+function _do(body, test) {
+  var awaitBody;
+  do {
+    var result = body();
+    if (result && result.then) {
+      if (_isSettledPact(result)) {
+        result = result.v;
+      } else {
+        awaitBody = true;
+        break;
+      }
+    }
+    var shouldContinue = test();
+    if (_isSettledPact(shouldContinue)) {
+      shouldContinue = shouldContinue.v;
+    }
+    if (!shouldContinue) {
+      return result;
+    }
+  } while (!shouldContinue.then);
+  const pact = new _Pact();
+  const reject = _settle.bind(null, pact, 2);
+  (awaitBody ? result.then(_resumeAfterBody) : shouldContinue.then(_resumeAfterTest)).then(void 0, reject);
+  return pact;
+  function _resumeAfterBody(value) {
+    result = value;
+    for (;;) {
+      shouldContinue = test();
+      if (_isSettledPact(shouldContinue)) {
+        shouldContinue = shouldContinue.v;
+      }
+      if (!shouldContinue) {
+        break;
+      }
+      if (shouldContinue.then) {
+        shouldContinue.then(_resumeAfterTest).then(void 0, reject);
+        return;
+      }
+      result = body();
+      if (result && result.then) {
+        if (_isSettledPact(result)) {
+          result = result.v;
+        } else {
+          result.then(_resumeAfterBody).then(void 0, reject);
+          return;
+        }
+      }
+    }
+    _settle(pact, 1, result);
+  }
+  function _resumeAfterTest(shouldContinue) {
+    if (shouldContinue) {
+      do {
+        result = body();
+        if (result && result.then) {
+          if (_isSettledPact(result)) {
+            result = result.v;
+          } else {
+            result.then(_resumeAfterBody).then(void 0, reject);
+            return;
+          }
+        }
+        shouldContinue = test();
+        if (_isSettledPact(shouldContinue)) {
+          shouldContinue = shouldContinue.v;
+        }
+        if (!shouldContinue) {
+          _settle(pact, 1, result);
+          return;
+        }
+      } while (!shouldContinue.then);
+      shouldContinue.then(_resumeAfterTest).then(void 0, reject);
+    } else {
+      _settle(pact, 1, result);
+    }
+  }
+}
+function getResolver() {
+  const resolve = function (did, parsed) {
+    try {
+      let _interrupt;
+      function _temp4() {
+        const contentType = typeof didDocument?.['@context'] !== 'undefined' ? 'application/did+ld+json' : 'application/did+json';
+        if (err) {
+          return {
+            didDocument,
+            didDocumentMetadata,
+            didResolutionMetadata: {
+              error: 'notFound',
+              message: err
+            }
+          };
+        } else {
+          return {
+            didDocument,
+            didDocumentMetadata,
+            didResolutionMetadata: {
+              contentType
+            }
+          };
+        }
+      }
+      let err = null;
+      let path = decodeURIComponent(parsed.id) + DOC_PATH;
+      const id = parsed.id.split(':');
+      if (id.length > 1) {
+        path = id.map(decodeURIComponent).join('/') + '/did.json';
+      }
+      const url = `https://${path}`;
+      const didDocumentMetadata = {};
+      let didDocument = null;
+      const _temp3 = _do(function () {
+        function _temp2() {
+          if (!_interrupt) {
+            // TODO: this excludes the use of query params
+            const docIdMatchesDid = didDocument?.id === did;
+            if (!docIdMatchesDid) {
+              err = 'resolver_error: DID document id does not match requested did';
+              // break // uncomment this when adding more checks
+            }
+          }
+        }
+        const _temp = _catch(function () {
+          return Promise.resolve(get(url)).then(function (_get) {
+            didDocument = _get;
+          });
+        }, function (error) {
+          err = `resolver_error: DID must resolve to a valid https URL containing a JSON document: ${error}`;
+          _interrupt = 1;
+        });
+        return _temp && _temp.then ? _temp.then(_temp2) : _temp2(_temp); // eslint-disable-next-line no-constant-condition
+      }, function () {
+        return !_interrupt && false;
+      });
+      return Promise.resolve(_temp3 && _temp3.then ? _temp3.then(_temp4) : _temp4(_temp3));
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  };
+  return {
+    web: resolve
+  };
+}
+
+
+//# sourceMappingURL=resolver.module.js.map
+
+
+/***/ }),
+
 /***/ "./node_modules/z-schema/src/Errors.js":
 /*!*********************************************!*\
   !*** ./node_modules/z-schema/src/Errors.js ***!
@@ -66710,9 +74348,12 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _veramo_did_provider_key__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! @veramo/did-provider-key */ "./node_modules/@veramo/did-provider-key/build/index.js");
 /* harmony import */ var _veramo_credential_w3c__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! @veramo/credential-w3c */ "./node_modules/@veramo/credential-w3c/build/index.js");
 /* harmony import */ var _veramo_data_store_json__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! @veramo/data-store-json */ "./node_modules/@veramo/data-store-json/build/index.js");
-/* harmony import */ var _chromeStorageHelper_js__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./chromeStorageHelper.js */ "./services/chromeStorageHelper.js");
+/* harmony import */ var _veramo_message_handler__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! @veramo/message-handler */ "./node_modules/@veramo/message-handler/build/index.js");
+/* harmony import */ var _veramo_did_comm__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! @veramo/did-comm */ "./node_modules/@veramo/did-comm/build/index.js");
+/* harmony import */ var _veramo_did_resolver__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! @veramo/did-resolver */ "./node_modules/@veramo/did-resolver/build/index.js");
+/* harmony import */ var web_did_resolver__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! web-did-resolver */ "./node_modules/web-did-resolver/lib/resolver.module.js");
+/* harmony import */ var _chromeStorageHelper_js__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./chromeStorageHelper.js */ "./services/chromeStorageHelper.js");
 /* provided dependency */ var Buffer = __webpack_require__(/*! buffer */ "./node_modules/buffer/index.js")["Buffer"];
-/* provided dependency */ var process = __webpack_require__(/*! process/browser */ "./node_modules/process/browser.js");
 // services/veramoService.js (Wallet Extension)
 // Implements manual JWT creation for DID Auth and handles nonceCarrierToken.
 // Uses a minimal plugin set for agent initialization based on user's current working version.
@@ -66738,11 +74379,11 @@ function stringToBase64Url(str) {
    // For createJWT if it were working, but also for ICredentialPlugin type
   
   // Imports for other plugins if they were to be added back:
-  // import { MessageHandler } from '@veramo/message-handler';
-  // import { DIDComm, DIDCommMessageHandler, CoordinateMediationRecipientMessageHandler } from '@veramo/did-comm';
-  // import { DIDResolverPlugin } from '@veramo/did-resolver';
-  // import { Resolver } from 'did-resolver';
-  // import { getResolver as getWebResolver } from 'web-did-resolver';
+  
+  
+  
+  
+  
   // --- End Veramo Imports ---
   
   // Import our chrome.storage helper
@@ -66757,7 +74398,7 @@ function stringToBase64Url(str) {
   
   // Hardcoded Mediator Info (for requestAndSetupMediation - will error if DIDComm not present)
   const MEDIATOR_DID = 'did:key:z6Mknee8x3XangPXcUDkwn6p7V9i4qyymVfxD1NXALv1tYTK';
-  const MEDIATOR_ENDPOINT = `http://localhost:${process.env.PORT || 3000}/didcomm`;
+  const MEDIATOR_ENDPOINT = `http://localhost:3002/didcomm`; // Example endpoint, replace with actual mediator endpoint`;
   
   
   // Direct save function (no debounce)
@@ -66766,7 +74407,7 @@ function stringToBase64Url(str) {
       try {
           const stateSize = JSON.stringify(state)?.length || 0;
           console.log(`[Wallet Veramo Service] State size before save: ~${Math.round(stateSize / 1024)} KB`);
-          await (0,_chromeStorageHelper_js__WEBPACK_IMPORTED_MODULE_7__.saveState)(state);
+          await (0,_chromeStorageHelper_js__WEBPACK_IMPORTED_MODULE_11__.saveState)(state);
           console.log('[Wallet Veramo Service] Direct saveState finished.');
       } catch (e) {
           console.error("[Wallet Veramo Service] Error during direct saveState call:", e);
@@ -66776,7 +74417,7 @@ function stringToBase64Url(str) {
   async function _initializeVeramoAgent() {
       console.log('[Wallet Veramo Service - JSON Store] Initializing...');
       try {
-          const initialState = await (0,_chromeStorageHelper_js__WEBPACK_IMPORTED_MODULE_7__.loadState)();
+          const initialState = await (0,_chromeStorageHelper_js__WEBPACK_IMPORTED_MODULE_11__.loadState)();
           console.log('[Wallet Veramo Service - JSON Store] Initial state loaded.');
   
           const jsonStoreManager = {
