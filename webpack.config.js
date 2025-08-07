@@ -1,62 +1,61 @@
 // webpack.config.js
-const path = require('path'); // Needed for resolve and CopyPlugin potentially
+const path = require('path');
 const webpack = require('webpack');
-const NodePolyfillPlugin = require('node-polyfill-webpack-plugin');
 const CopyPlugin = require('copy-webpack-plugin');
 
 module.exports = {
     mode: 'development',
-    devtool: 'cheap-module-source-map',
+    target: 'web',
+    devtool: false,
+    
+    
     entry: {
         'background/service-worker': './background/service-worker.js',
+        'offscreen/offscreen': './offscreen/offscreen.js',
         'popup/popup': './popup/popup.js',
-        'pages/manageDids': './pages/manageDids.js'
+        'pages/manageDids': './pages/manageDids.js',
+        'pages/messages': './pages/messages.js',
+        'pages/form-display': './pages/form-display.js',
     },
     output: {
         path: path.resolve(__dirname, 'dist'),
         filename: '[name].js',
         clean: true,
     },
-    target: 'webworker',
+    optimization: {
+        minimize: false,
+        minimizer: [],
+        splitChunks: false,
+        runtimeChunk: false,
+    },
     resolve: {
         extensions: ['.js'],
         fallback: {
-            "fs": false,
-            "path": require.resolve("path-browserify"),
-            "crypto": require.resolve("crypto-browserify"),
-            "stream": require.resolve("stream-browserify"),
-            "buffer": require.resolve("buffer/"),
-            "process": require.resolve("process/browser"),
-            "vm": require.resolve("vm-browserify"),
-            "events": require.resolve("events/"),
-            "assert": require.resolve("assert/"),
-            "url": require.resolve("url/"),
-            "os": require.resolve("os-browserify/browser"),
-            "https": require.resolve("https-browserify"),
-            "zlib": require.resolve("browserify-zlib"),
-            "util": require.resolve("util/")
+            "assert": require.resolve("assert/"), "buffer": require.resolve("buffer/"),
+            "constants": require.resolve("constants-browserify"), "crypto": require.resolve("crypto-browserify"),
+            "http": require.resolve("stream-http"), "https": require.resolve("https-browserify"),
+            "os": require.resolve("os-browserify/browser"), "path": require.resolve("path-browserify"),
+            "querystring": require.resolve("querystring-es3"), "stream": require.resolve("stream-browserify"),
+            "url": require.resolve("url/"), "util": require.resolve("util/"),
+            "zlib": require.resolve("browserify-zlib"), "child_process": false, "fs": false,
+            "module": false, "worker_threads": false, "inspector": false, "vm": false,
         }
-        // No react-native aliases needed
     },
     plugins: [
-        new NodePolyfillPlugin({
-            excludeAliases: ["console"]
-        }),
-        new webpack.ProvidePlugin({
-             Buffer: ['buffer', 'Buffer'],
-             process: 'process/browser',
-        }),
+        // ProvidePlugin is removed to prevent global pollution.
         new CopyPlugin({
             patterns: [
                 { from: "manifest.json", to: "." },
+                { from: "offscreen/offscreen.html", to: "offscreen/" },
                 { from: "popup/popup.html", to: "popup/" },
-                { from: "popup/popup.css", to: "popup/" },
                 { from: "pages/manageDids.html", to: "pages/" },
-                { from: "pages/manageDids.css", to: "pages/" },
+                { from: "pages/messages.html", to: "pages/" },
+                { from: "pages/form-display.html", to: "pages/" },
                 { from: "icons", to: "icons/" },
+                { from: "popup/popup.css", to: "popup/" },
+                { from: "pages/manageDids.css", to: "pages/" },
+                { from: "pages/messages.css", to: "pages/" },
             ],
         }),
     ],
-    stats: {errorDetails: true},
-    ignoreWarnings: [/Critical dependency: the request of a dependency is an expression/],
 };

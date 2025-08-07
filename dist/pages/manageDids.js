@@ -117,4 +117,3 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 /******/ })()
 ;
-//# sourceMappingURL=manageDids.js.map

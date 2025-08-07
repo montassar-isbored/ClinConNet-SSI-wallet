@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Consent Request</title>
+    <link rel="stylesheet" href="messages.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header"><h1>Consent Request</h1></header>
+        <div id="formContainer" class="card">Loading form...</div>
+        
+        <div id="actionsContainer" class="card">
+            <h3>Actions</h3>
+            <div id="verificationStatus" class="status-display">Signature not verified.</div>
+            <button id="verifySignatureBtn" class="button">Check Signature</button>
+            <hr>
+            <button id="signBtn" class="button-primary" disabled>Sign</button>
+            <button id="generateProofBtn" class="button-primary" disabled>Generate Consent Proof</button>
+        </div>
+        
+        <div id="proofContainer" class="card" style="display: none;">
+            <h3>Consent Proof (SHA-256 Hash)</h3>
+            <pre id="proofOutput" style="word-break: break-all;"></pre>
+            <button id="copyProofBtn" class="button">Copy Proof</button>
+        </div>
+    </div>
+    <script src="form-display.js"></script>
+</body>
+</html>

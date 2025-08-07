@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ClinConNet Wallet - Messages</title>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="messages.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <img src="../icons/icon48.png" alt="Logo" class="header-logo">
+            <h1>Messages & Connections</h1>
+        </header>
+        <section class="main-content">
+            <div class="connection-status-section">
+                <h3>Cloud Agent (Mediator) Status</h3>
+                <div id="mediationStatus" class="status-display">Ready.</div>
+            </div>
+            <div class="button-group">
+                <button id="requestMediationBtn" class="button">Request Mediation</button>
+                <button id="pickupMessagesBtn" class="button-primary">Refresh Messages</button>
+            </div>
+            <hr>
+            <div class="card send-message-section">
+                <h3>Send a Basic Message</h3>
+                <div class="form-group">
+                    <label for="recipientDid">Recipient DID:</label>
+                    <input type="text" id="recipientDid" placeholder="did:key:..." required>
+                </div>
+                <div class="form-group">
+                    <label for="messageBody">Message:</label>
+                    <textarea id="messageBody" rows="3" placeholder="Hello..." required></textarea>
+                </div>
+                <button id="sendMessageBtn" class="button-primary">Send Message</button>
+            </div>
+            <hr>
+            <div id="messagesArea">
+                <h3>Message History</h3>
+                <ul id="messageList" class="message-list">
+                    <li>Loading message history...</li>
+                </ul>
+            </div>
+        </section>
+    </div>
+    <script src="messages.js"></script>
+</body>
+</html>
