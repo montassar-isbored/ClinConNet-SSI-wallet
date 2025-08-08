@@ -77354,7 +77354,6 @@ window.process = (process_browser__WEBPACK_IMPORTED_MODULE_1___default());
 
 
 
-// THIS IS THE CORRECTED IMPORT
 
 
 
@@ -77432,12 +77431,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const signature = await agent.keyManagerSign({ keyRef: signingKey.kid, data: new TextEncoder().encode(signingInput) });
                 sendResponse({ success: true, userSignatureJws: `${signingInput}.${signature}` });
             } else if (messageType === 'GENERATE_CONSENT_PROOF') {
-                const { original_form_jws, user_consent_data, user_signature_jws } = message.payload;
-                const finalProofData = JSON.stringify({ original_form_jws, user_consent_data, user_signature_jws });
-                const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(finalProofData));
+                const { original_form_jws, user_consent_data, user_signature_jws, organization_encryption_key_hex } = message.payload;
+                const agent = await (0,_services_veramoService_js__WEBPACK_IMPORTED_MODULE_2__.getAgent)();
+
+                // 1. Assemble the final, doubly-signed consent object
+                const finalConsentData = {
+                    original_form_jws: original_form_jws,
+                    user_consent_data: user_consent_data,
+                    user_signature_jws: user_signature_jws
+                };
+                
+                // 2. Encrypt this entire object for the organization using the provided key
+                const encryptedConsent = await agent.keyManagerEncryptJWE({
+                    to: { type: 'X25519', publicKeyHex: organization_encryption_key_hex },
+                    data: JSON.stringify(finalConsentData)
+                });
+
+                // 3. Hash the resulting encrypted string (JWE) to create the proof
+                const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(encryptedConsent));
                 const hashArray = Array.from(new Uint8Array(hashBuffer));
                 const consentProofHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-                sendResponse({ success: true, consentProofHash });
+                
+                // 4. Send both back to the UI
+                sendResponse({ success: true, consentProofHash, encryptedConsentForSpa: encryptedConsent });
             } else {
                 if (messageType === 'GET_ALL_DIDS') {
                     const agent = await (0,_services_veramoService_js__WEBPACK_IMPORTED_MODULE_2__.getAgent)();

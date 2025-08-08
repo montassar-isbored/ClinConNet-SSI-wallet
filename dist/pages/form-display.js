@@ -2463,7 +2463,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     formContainer.innerHTML = decodedPayload.html;
     const formElement = formContainer.querySelector('form');
-    
+
     let userData = null;
     let userSignatureJws = null;
 
@@ -2506,12 +2506,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     generateProofBtn.addEventListener('click', async () => {
+        const organizationEncryptionKeyHex = document.getElementById('org-encryption-key').textContent;
         const proofResponse = await chrome.runtime.sendMessage({
             type: 'GENERATE_CONSENT_PROOF',
             payload: {
                 original_form_jws: formJws,
                 user_consent_data: userData,
-                user_signature_jws: userSignatureJws
+                user_signature_jws: userSignatureJws,
+                organization_encryption_key_hex: organizationEncryptionKeyHex
             }
         });
         if (proofResponse.success) {
