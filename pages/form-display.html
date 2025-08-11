@@ -7,8 +7,13 @@
 </head>
 <body>
     <div class="container">
-        <header class="header"><h1>Consent Request</h1></header>
-        <div id="formContainer" class="card">Loading form...</div>
+        <header class="header">
+            <img src="../icons/icon48.png" alt="Logo" class="header-logo">
+            <h1>Consent Request</h1>
+        </header>
+
+        <div id="formContainer" class="card">
+            </div>
         
         <div id="actionsContainer" class="card">
             <h3>Actions</h3>
@@ -23,6 +28,17 @@
             <h3>Consent Proof (SHA-256 Hash)</h3>
             <pre id="proofOutput" style="word-break: break-all;"></pre>
             <button id="copyProofBtn" class="button">Copy Proof</button>
+            <p style="font-size: 0.9em; margin-top: 15px;">Please submit this proof to the ClinConNet web portal to receive a Transaction Reference.</p>
+        </div>
+
+        <div id="sendResponseContainer" class="card" style="display: none;">
+            <h3>Send Final Consent to Organization</h3>
+            <div class="form-group">
+                <label for="txRefInput">Paste Consent Proof TX Reference from Portal:</label>
+                <input type="text" id="txRefInput" placeholder="0x..." required>
+            </div>
+            <button id="sendResponseBtn" class="button-primary">Send back the Consent and Consent Proof</button>
+            <div id="sendResponseStatus" class="status-display" style="margin-top:15px;"></div>
         </div>
     </div>
     <script src="form-display.js"></script>

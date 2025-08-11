@@ -77434,13 +77434,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 const { original_form_jws, user_consent_data, user_signature_jws, organization_encryption_key_hex } = message.payload;
                 const agent = await (0,_services_veramoService_js__WEBPACK_IMPORTED_MODULE_2__.getAgent)();
 
-                // 1. Assemble the final, doubly-signed consent object
                 const finalConsentData = {
                     original_form_jws: original_form_jws,
                     user_consent_data: user_consent_data,
                     user_signature_jws: user_signature_jws
                 };
-                
+                const finalConsentDataString = JSON.stringify(finalConsentData);
                 // 2. Encrypt this entire object for the organization using the provided key
                 const encryptedConsent = await agent.keyManagerEncryptJWE({
                     to: { type: 'X25519', publicKeyHex: organization_encryption_key_hex },
