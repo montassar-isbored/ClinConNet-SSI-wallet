@@ -36,8 +36,23 @@ function getPublicKeyBytesFromDidKey(didKey) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const messageType = message?.type || 'UNKNOWN';
     (async () => {
-        try {
-            if (messageType === 'VERIFY_CONSENT_SIGNATURE') {
+        try { 
+            if (messageType === 'SETUP_FETCH_MOCK') {
+                self.fetch = (url, options) => {
+                    if (url.includes('https://example.com/redirect')) {
+                        console.log(`[Mock Fetch] Intercepted request to: ${url}`);
+                        return Promise.resolve(new Response(JSON.stringify({ status: 'ok' }), {
+                          status: 200,
+                          headers: { 'Content-Type': 'application/json' },
+                        }));
+                    }
+                    // This part is crucial: we must import the original fetch
+                    // to avoid an infinite loop if we called self.fetch again.
+                    // This assumes you are using a bundler that allows dynamic import.
+                    return import('cross-fetch').then(({ fetch }) => fetch(url, options));
+                };
+                sendResponse({ success: true, mocked: true });
+        } else if (messageType === 'VERIFY_CONSENT_SIGNATURE') {
                 const jws = message.payload.jws;
                 const signerDid = message.payload.from;
 
